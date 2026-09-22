@@ -584,67 +584,71 @@ async def get_task(task_id: int):
 # bigger files only slows our upload (base64 inflates by ~33% on top of
 # the wire transfer). 2048px preserves enough detail for character /
 # style references; smaller is also fine.
-REF_IMAGE_MAX_EDGE = 2048
+REF_IMAGE_MAX_EDGE = 1920
+
+
+def _prep_uploaded_image(file_path: Path) -> Path:
+    """Process uploaded reference image into JPEG RGB (≤1920px, quality 90)
+    matching storyboard behavior. Converts large PNG/WEBP/BMP into compact
+    JPEG so bridge upload to Google Flow completes in 1-2 seconds.
+    """
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(file_path) as img:
+            img = ImageOps.exif_transpose(img)
+            # Handle alpha by compositing on white background before RGB conversion
+            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                if img.mode != "RGBA":
+                    img = img.convert("RGBA")
+                bg.paste(img, mask=img.split()[3])
+                img = bg
+            else:
+                img = img.convert("RGB")
+
+            w, h = img.size
+            scale = min(1.0, REF_IMAGE_MAX_EDGE / max(w, h))
+            if scale < 1.0:
+                new_w = int(round(w * scale))
+                new_h = int(round(h * scale))
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+
+            out_jpg = file_path.with_suffix(".jpg")
+            img.save(out_jpg, format="JPEG", quality=90, optimize=True)
+            if out_jpg != file_path and file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+            log.info(
+                f"upload-image: processed {file_path.name} → {out_jpg.name} "
+                f"({out_jpg.stat().st_size // 1024}KB)"
+            )
+            return out_jpg
+    except Exception as e:
+        log.warning(f"upload-image: prep failed for {file_path.name} ({e}) — keeping raw")
+        return file_path
 
 
 @router.post("/upload-image")
 async def upload_image(file: UploadFile = File(...)):
     """Upload reference/character image to temp folder.
 
-    Auto-resizes any image whose long edge exceeds REF_IMAGE_MAX_EDGE
-    (2048px). 4K phone photos are commonly 4032×3024 — a 6-8 MB JPEG
-    becomes a 800 KB JPEG with no visible quality loss for reference
-    purposes. EXIF metadata is also stripped (often adds 100+ KB of
-    GPS/camera info that's pointless for Google).
-
-    Returns the SAVED path (post-resize) so downstream code stays
-    unchanged.
+    Processes uploaded reference image into JPEG RGB (≤1920px, quality 90)
+    matching storyboard behavior. Large PNGs (e.g. 5MB) become compact ~300KB JPEGs.
+    Returns the SAVED path (post-resize) so downstream code stays unchanged.
     """
     img_dir = OUTPUT_DIR / "uploaded_images"
     img_dir.mkdir(parents=True, exist_ok=True)
     ext = (Path(file.filename or "img.png").suffix or ".png").lower()
-    # Force common-case extensions to keep PIL happy
     if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
         ext = ".png"
     out = img_dir / f"{uuid.uuid4().hex}{ext}"
     with out.open("wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Resize if needed. Wrapped in try/except so an unusual format that
-    # PIL can't open still falls through with the raw file (better to
-    # have a slow upload than to reject the user's file).
-    try:
-        from PIL import Image, ImageOps
-        with Image.open(out) as img:
-            # Honour EXIF orientation flag BEFORE we strip metadata
-            img = ImageOps.exif_transpose(img)
-            w, h = img.size
-            long_edge = max(w, h)
-            if long_edge > REF_IMAGE_MAX_EDGE:
-                scale = REF_IMAGE_MAX_EDGE / long_edge
-                new_w = int(round(w * scale))
-                new_h = int(round(h * scale))
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                log.info(
-                    f"upload-image: resized {w}x{h} → {new_w}x{new_h} "
-                    f"({file.filename})"
-                )
-                # Save back. Use JPEG quality 90 for jpegs, lossless for
-                # png/webp. Convert RGBA → RGB only when saving JPEG.
-                save_kwargs = {}
-                fmt = (img.format or "").upper()
-                lower_ext = ext.lower()
-                if lower_ext in (".jpg", ".jpeg"):
-                    if img.mode in ("RGBA", "P"):
-                        img = img.convert("RGB")
-                    save_kwargs = {"quality": 90, "optimize": True}
-                elif lower_ext == ".png":
-                    save_kwargs = {"optimize": True}
-                elif lower_ext == ".webp":
-                    save_kwargs = {"quality": 90, "method": 4}
-                img.save(out, **save_kwargs)
-    except Exception as e:
-        log.warning(f"upload-image: resize skipped ({e}) — saving raw")
+    # Process in a thread so PIL resize doesn't block the event loop
+    out = await asyncio.to_thread(_prep_uploaded_image, out)
 
     return {"path": str(out), "name": file.filename}
 
