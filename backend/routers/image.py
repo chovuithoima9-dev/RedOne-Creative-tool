@@ -348,6 +348,50 @@ async def _process_image_task(task_id: int):
             it for it in items
             if it.get("status") != ItemStatus.COMPLETED.value
         ]
+
+        # Concurrency safety: multi-reference image generation (especially >= 3 refs)
+        # is computationally heavy on Google's model workers. Firing 4-8 parallel requests
+        # with 5-10 reference images causes Google to fail with RPC error [13] (INTERNAL).
+        # We auto-clamp concurrency for multi-ref tasks to ensure reliable generation.
+        max_refs = 0
+        all_ref_paths = []
+        for it in pending:
+            try:
+                it_extra = json.loads(it.get("extra_json") or "{}")
+                refs = it_extra.get("reference_images") or []
+                max_refs = max(max_refs, len(refs))
+                for p in refs:
+                    if p and Path(p).exists() and p not in all_ref_paths:
+                        all_ref_paths.append(p)
+            except Exception:
+                pass
+
+        user_concurrent = task.get("concurrent") or 1
+        if max_refs >= 5:
+            parallelism = max(1, min(user_concurrent, 2, len(pending) or 1))
+        elif max_refs >= 2:
+            parallelism = max(1, min(user_concurrent, 3, len(pending) or 1))
+        else:
+            parallelism = max(1, min(user_concurrent, len(pending) or 1))
+
+        # Pre-upload all unique reference images upfront in parallel
+        # so individual items hit cache instantly and don't stall in parallel locks.
+        if all_ref_paths:
+            log.info(
+                f"Image task {task_id}: Pre-uploading {len(all_ref_paths)} reference images "
+                f"(max_refs={max_refs}, batch_size={parallelism})..."
+            )
+            sem = asyncio.Semaphore(2)
+            async def _safe_preupload(p):
+                async with sem:
+                    try:
+                        return await client.upload_image(p)
+                    except Exception as e:
+                        log.warning(f"Pre-upload ref image {p} failed: {e}")
+                        return None
+            await asyncio.gather(*(_safe_preupload(p) for p in all_ref_paths))
+            log.info(f"Image task {task_id}: Reference images pre-uploaded.")
+
         batches = [
             pending[i:i + parallelism]
             for i in range(0, len(pending), parallelism)
@@ -362,7 +406,7 @@ async def _process_image_task(task_id: int):
 
             async def _staggered_item(idx: int, it: dict):
                 if idx > 0:
-                    await asyncio.sleep(idx * 1.5)
+                    await asyncio.sleep(idx * 2.5)
                 return await run_item_bounded(it, generate_image_item(client, task, it))
 
             batch_results = await asyncio.gather(

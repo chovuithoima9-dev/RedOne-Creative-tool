@@ -812,7 +812,12 @@ class BridgeFlowClient(FlowClient):
         result = None
         for attempt in range(5):
             if attempt > 0:
-                await asyncio.sleep(_rand.uniform(1.5, 3.0))
+                delay = (attempt * 2.5) + _rand.uniform(1.0, 2.5)
+                log.info(
+                    f"[{self._account_email}] Retrying ogiZ0b in {delay:.1f}s "
+                    f"(attempt {attempt + 1}/5)..."
+                )
+                await asyncio.sleep(delay)
                 # Refresh reCAPTCHA token
                 recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
                 new_ctx = [
@@ -826,6 +831,12 @@ class BridgeFlowClient(FlowClient):
                 # New seed on retry
                 seed = _rand.randint(100000000, 2147483647)
                 inner_payload[1][0][3] = seed
+                # Regenerate batch & operation UUIDs on retry so Google doesn't dedupe or hit conflict
+                batch_uuid = str(_uuid.uuid4()).upper()
+                op_uuid = str(_uuid.uuid4()).upper()
+                inner_payload[1][0][12] = batch_uuid
+                inner_payload[1][0][13] = op_uuid
+                inner_payload[4] = [str(_uuid.uuid4()).upper()]
 
             try:
                 r = await bridge.batch_execute(
