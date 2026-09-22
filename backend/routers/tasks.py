@@ -363,32 +363,11 @@ async def _retry_items_runner(task: dict, item_ids: list[int], force: bool = Fal
             await finalize(task_id)
             return
 
-        max_refs = 0
-        for it in targets:
-            try:
-                it_extra = json.loads(it.get("extra_json") or "{}")
-                refs = it_extra.get("reference_images") or []
-                max_refs = max(max_refs, len(refs))
-            except Exception:
-                pass
-
-        user_concurrent = task.get("concurrent") or 1
-        if max_refs >= 5:
-            parallelism = max(1, min(user_concurrent, 2, len(targets)))
-        elif max_refs >= 2:
-            parallelism = max(1, min(user_concurrent, 3, len(targets)))
-        else:
-            parallelism = max(1, min(user_concurrent, len(targets)))
-
+        parallelism = max(1, min(task.get("concurrent") or 1, len(targets)))
         batches = [targets[i:i + parallelism] for i in range(0, len(targets), parallelism)]
         for batch in batches:
-            async def _staggered_retry(idx: int, it: dict):
-                if idx > 0:
-                    await asyncio.sleep(idx * 2.5)
-                return await gen_fn(client, task, it)
-
             results = await asyncio.gather(
-                *(_staggered_retry(idx, it) for idx, it in enumerate(batch)),
+                *(gen_fn(client, task, it) for it in batch),
                 return_exceptions=True,
             )
             # Stop early if the account died mid-retry.
