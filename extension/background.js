@@ -901,18 +901,8 @@ async function _doBatchExecuteTask(task) {
                     console.log("[RedOne BOQ] at:", atToken.substring(0, 30) + "...");
                     console.log("[RedOne BOQ] buildLabel:", buildLabel);
 
-                    // 3) Build URL preserving user account route (/u/1/, /u/2/, etc.) and authuser
-                    let basePath = "/";
-                    const uMatch = window.location.pathname.match(/^(\/u\/\d+)/);
-                    if (uMatch) {
-                        basePath = `${uMatch[1]}/`;
-                    }
-                    const authUserMatch = window.location.search.match(/[?&]authuser=([^&#]+)/);
-                    const authUserParam = authUserMatch
-                        ? `&authuser=${encodeURIComponent(authUserMatch[1])}`
-                        : (uMatch ? `&authuser=${uMatch[1].replace('/u/', '')}` : "");
-
-                    const url = `${basePath}_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${encodeURIComponent(rpcIdArg)}&source-path=${encodeURIComponent(sourcePathArg)}&bl=${encodeURIComponent(buildLabel)}&f.sid=${encodeURIComponent(fSid)}&hl=vi${authUserParam}&_reqid=${Math.floor(Math.random() * 900000) + 100000}&rt=c`;
+                    // 3) Build URL (standard BOQ batchexecute path — cookies automatically handled by browser in MAIN world)
+                    const url = `/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${encodeURIComponent(rpcIdArg)}&source-path=${encodeURIComponent(sourcePathArg)}&bl=${encodeURIComponent(buildLabel)}&f.sid=${encodeURIComponent(fSid)}&hl=vi&_reqid=${Math.floor(Math.random() * 900000) + 100000}&rt=c`;
 
                     // 4) POST (same-origin, browser attaches cookies automatically)
                     const ac = new AbortController();
@@ -1033,13 +1023,11 @@ async function _doInitFlowProjectTask(task) {
     const currentUrl = tab.url || tab.pendingUrl || "";
     const targetPid = task.payload?.target_project_id;
 
-    // Preserve user routing prefix (/u/1/, /u/2/, etc.) and authuser query param
+    // Preserve user routing prefix (/u/1/, /u/2/, etc.) without polluting with query params
     const uMatch = currentUrl.match(/\/(u\/\d+)\b/);
     const userPrefix = uMatch ? `/${uMatch[1]}` : "";
-    const authUserMatch = currentUrl.match(/[?&]authuser=([^&#]+)/);
-    const authUserQuery = authUserMatch ? `?authuser=${encodeURIComponent(authUserMatch[1])}` : "";
 
-    const buildProjectUrl = (pid) => `https://flow.google.com${userPrefix}/project/${pid}${authUserQuery}`;
+    const buildProjectUrl = (pid) => `https://flow.google.com${userPrefix}/project/${pid}`;
 
     // A) If a target project was specified, navigate directly to it preserving user session
     if (targetPid) {
@@ -1057,7 +1045,7 @@ async function _doInitFlowProjectTask(task) {
                     const isError = await _checkIfTabHasProjectNotFound(tab.id);
                     if (isError) {
                         console.warn(`[RedOne] Project ${targetPid} not found. Recovering tab back to homepage...`);
-                        const homeUrl = `https://flow.google.com${userPrefix}/${authUserQuery}`;
+                        const homeUrl = `https://flow.google.com${userPrefix}/`;
                         await chrome.tabs.update(tab.id, { url: homeUrl });
                         return { error: "project_not_found", project_id: targetPid };
                     }
