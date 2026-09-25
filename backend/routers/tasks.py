@@ -363,6 +363,16 @@ async def _retry_items_runner(task: dict, item_ids: list[int], force: bool = Fal
             await finalize(task_id)
             return
 
+        # Mark targets PENDING in DB and broadcast so cards immediately show pending spinner with prompt
+        for it in targets:
+            db.update_item(it["id"], status=ItemStatus.PENDING.value, error_message=None)
+            await hub.broadcast("item_status", {
+                "task_id": task_id,
+                "item_id": it["id"],
+                "status": ItemStatus.PENDING.value,
+                "prompt": it.get("prompt", ""),
+            })
+
         parallelism = max(1, min(task.get("concurrent") or 1, len(targets)))
         batches = [targets[i:i + parallelism] for i in range(0, len(targets), parallelism)]
         for batch in batches:

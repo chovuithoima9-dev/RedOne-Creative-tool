@@ -117,6 +117,7 @@ class TaskResultBody(BaseModel):
 
 @router.get("/next-task")
 async def next_task(
+    request: Request,
     tab_status: str = "ready",
     tab_url: str = "",
     tab_email: str = "",
@@ -156,6 +157,11 @@ async def next_task(
             parsed_credits = int(tab_credits)
         except Exception:
             pass
+
+    ua = request.headers.get("user-agent", "")
+    if ua and not hasattr(bridge, "_cached_ua"):
+        bridge._cached_ua = ua
+        log.info(f"[SYNC] Detected extension browser User-Agent: {ua}")
 
     bridge.update_tab_state(
         tab_status, tab_url, email=tab_email, tier=tab_tier, credits=parsed_credits
@@ -232,17 +238,21 @@ async def next_task(
         except Exception as ex:
             log.warning(f"Error auto-syncing tab account {clean_email}: {ex}")
 
-    # At capacity → keep the heartbeat/tab_status fresh but claim nothing.
+    # Always pop pending session commands — even when no task is ready or at capacity.
+    # This lets the extension execute commands (clear_cookies, reload, etc.)
+    # independently of the task queue, on every poll cycle.
+    commands = bridge.pop_session_commands()
+
+    # At capacity → keep the heartbeat/tab_status fresh but claim no new tasks.
     if capacity <= 0:
+        if commands:
+            return envelope({"task": None, "session_commands": commands})
         return {"task": None}
+
     # Pass tab_status so the bridge only hands tasks to a "ready" instance
     # (signed-in labs.google tab). Lets the extension run in multiple Chrome
     # profiles — the ones without the tab poll harmlessly and claim nothing.
     task = await bridge.pop_task_for_extension(timeout=0.0, tab_status=tab_status)
-    # Always attach pending session commands — even when no task is ready.
-    # This lets the extension execute commands (clear_cookies, reload, etc.)
-    # independently of the task queue, on every poll cycle.
-    commands = bridge.pop_session_commands()
     if task is None:
         if commands:
             return envelope({"task": None, "session_commands": commands})
@@ -405,3 +415,21 @@ async def bridge_state():
     """
     from ..services.browser_bridge import bridge
     return bridge.snapshot_state()
+
+
+@router.get("/debug-ua")
+async def debug_ua():
+    from ..services.browser_bridge import bridge
+    return {
+        "cached_ua": getattr(bridge, "_cached_ua", None),
+        "bridge_email": bridge.get_active_account_email(),
+        "bridge_tier": bridge.get_active_account_tier(),
+        "bridge_credits": bridge.get_active_account_credits(),
+    }
+
+
+
+
+
+
+

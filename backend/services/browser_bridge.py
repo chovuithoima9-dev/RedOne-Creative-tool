@@ -191,47 +191,53 @@ class BrowserBridge:
         credits: Optional[int] = None,
     ) -> None:
         """Called by /sync/next-task. Updates our view of what the
-        extension currently can/can't do."""
-        self._ext_last_poll = time.time()
-        self._ext_last_status = status or "unknown"
-        self._ext_last_url = url or ""
+        extension currently can/can't do. Prevents flapping when multiple
+        Chrome profiles poll concurrently."""
+        now = time.time()
+        self._ext_last_poll = now
         if status == "ready":
-            self._ext_last_ready_poll = time.time()
+            self._ext_last_ready_poll = now
+            self._ext_last_status = "ready"
+            if url:
+                self._ext_last_url = url
             if email:
                 self._ext_last_email = email.strip().lower()
-            else:
-                self._ext_last_email = None
             if tier:
                 self._ext_last_tier = tier.strip().upper()
             if credits is not None:
                 self._ext_last_credits = credits
         else:
-            # If tab is not ready (logged out / no tab), clear active credentials immediately
-            self._ext_last_email = None
-            self._ext_last_tier = None
-            self._ext_last_credits = None
+            # Only downgrade status if we haven't seen a ready tab in 10s
+            last_ready_age = now - getattr(self, "_ext_last_ready_poll", 0.0)
+            if last_ready_age > 10.0:
+                self._ext_last_status = status or "unknown"
+                if url:
+                    self._ext_last_url = url
+                self._ext_last_email = None
+                self._ext_last_tier = None
+                self._ext_last_credits = None
 
     def get_active_account_email(self) -> Optional[str]:
         """Return the Google account email detected from the active Flow tab, if any."""
-        if self._ext_last_status != "ready":
+        if self._ext_last_status != "ready" and (time.time() - getattr(self, "_ext_last_ready_poll", 0.0) > 10.0):
             return None
         return self._ext_last_email if self._ext_last_email else None
 
     def get_active_account_tier(self) -> str:
         """Return the subscription tier detected from the active Flow tab ('ULTRA', 'PRO', 'FREE')."""
-        if self._ext_last_status != "ready":
+        if self._ext_last_status != "ready" and (time.time() - getattr(self, "_ext_last_ready_poll", 0.0) > 10.0):
             return "FREE"
         return self._ext_last_tier or "FREE"
 
     def get_active_account_credits(self) -> Optional[int]:
         """Return the remaining credits detected from the active Flow tab, if any."""
-        if self._ext_last_status != "ready":
+        if self._ext_last_status != "ready" and (time.time() - getattr(self, "_ext_last_ready_poll", 0.0) > 10.0):
             return None
         return self._ext_last_credits
 
     def get_active_project_id(self) -> Optional[str]:
         """Extract project ID from the last reported tab URL if available."""
-        if self._ext_last_status != "ready" or not self._ext_last_url:
+        if not self._ext_last_url:
             return None
         import re
         m = re.search(r"/project/([a-zA-Z0-9_-]{36})", self._ext_last_url)
@@ -244,6 +250,13 @@ class BrowserBridge:
         /sync/next-task for several seconds. Keeps is_extension_live()
         True throughout long-running tasks."""
         self._ext_last_poll = time.time()
+
+    def get_user_agent(self) -> str:
+        """Return the User-Agent reported by the active Chrome extension."""
+        return getattr(self, "_cached_ua", "") or (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        )
 
     def is_extension_live(self) -> bool:
         return (time.time() - self._ext_last_poll) < EXT_LIVE_THRESHOLD_S
@@ -482,6 +495,7 @@ class BrowserBridge:
         inner_payload: Any,
         source_path: str = "/",
         timeout_ms: int = 120000,
+        recaptcha_action: str = "",
     ) -> dict:
         """Execute a BOQ/WIZ batchexecute RPC from inside the user's
         flow.google.com tab.
@@ -491,21 +505,31 @@ class BrowserBridge:
         the RPC through the extension, which injects it into the tab
         where the browser automatically attaches Google auth cookies.
 
+        When ``recaptcha_action`` is set (e.g. "IMAGE_GENERATION"),
+        the extension mints the reCAPTCHA token **inline** inside the
+        same ``executeScript`` call that sends the request — keeping
+        token + fetch in one execution context, which prevents Google's
+        UNUSUAL_ACTIVITY detection.
+
         Args:
             rpc_id: The WIZ RPC ID (e.g. "ogiZ0b" for image gen)
             inner_payload: The inner payload (Python value, will be JSON-serialized)
             source_path: The source-path URL param (e.g. "/project/<uuid>")
             timeout_ms: Timeout for the fetch call inside the tab
+            recaptcha_action: reCAPTCHA action to mint inline (empty = skip)
 
         Returns:
             dict with keys: status, rpc_result, chunks, error
         """
-        return await self._enqueue_and_wait("batch_execute", {
+        payload = {
             "rpc_id": rpc_id,
             "inner_payload": inner_payload,
             "source_path": source_path,
             "timeout_ms": timeout_ms,
-        })
+        }
+        if recaptcha_action:
+            payload["recaptcha_action"] = recaptcha_action
+        return await self._enqueue_and_wait("batch_execute", payload)
 
     async def init_flow_project(
         self,

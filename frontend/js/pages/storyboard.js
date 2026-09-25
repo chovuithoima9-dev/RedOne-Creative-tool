@@ -6,7 +6,7 @@
 import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, geminiKeyNotice, openMediaViewer, openCompareViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton, makeItemRetryButton } from '../gallery_actions.js';
 
 const IMAGE_MODELS = [
   { key: 'nano_banana_pro',  label: '🍌 Nano Banana Pro' },
@@ -514,6 +514,9 @@ export function renderStoryboard(root) {
       if (it.upscale_status === 'running') card.appendChild(el('div', { class: 'upscale-progress-bar' }));
 
       const actionsRow = el('div', { class: 'scene-actions' });
+      if (it.status === 'error' && it.id != null) {
+        actionsRow.appendChild(makeItemRetryButton(state.id, it.id));
+      }
       if (it.output_url) {
         actionsRow.appendChild(el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost', title: 'Tải ảnh gốc' }, icon('download', 14), 'Tải'));
       }

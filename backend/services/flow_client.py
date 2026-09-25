@@ -1001,16 +1001,60 @@ class FlowClient:
         "4k": "UPSAMPLE_IMAGE_RESOLUTION_4K",
     }
     
-    async def upscale_image(self, media_id: str, resolution: str = "4k") -> dict:
+    async def upscale_image(
+        self,
+        media_id: str,
+        resolution: str = "4k",
+        input_path: str | Path | None = None,
+    ) -> dict:
         """Upscale a generated image to 2K or 4K.
-        
+
         Args:
             media_id: The media_id from generate_image() result
             resolution: "2k" or "4k"
-            
+            input_path: Optional local path to source image
+
         Returns:
-            dict with keys: media_id, download_url, width, height
+            dict with keys: media_id, encoded_image, width, height
         """
+        # Try local GPU upscale first
+        try:
+            from .upscaler import upscale_image_file
+            src_path = Path(input_path).resolve() if input_path else None
+            if not src_path or not src_path.exists():
+                from ..database import db
+                for t in db.list_tasks(limit=50):
+                    for it in db.get_task_items(t["id"]):
+                        ex = json.loads(it.get("extra_json") or "{}")
+                        if ex.get("media_id") == media_id and it.get("output_path"):
+                            p = Path(it["output_path"])
+                            if p.exists():
+                                src_path = p
+                                break
+                    if src_path:
+                        break
+            if src_path and src_path.exists():
+                scale = 2 if resolution.lower() == "2k" else 4
+                import tempfile
+                tmp_out = Path(tempfile.gettempdir()) / f"fc_upscale_{media_id}_{resolution}.png"
+                out_p = await upscale_image_file(src_path, tmp_out, scale=scale)
+                raw = out_p.read_bytes()
+                tmp_out.unlink(missing_ok=True)
+                from PIL import Image
+                with Image.open(src_path) as im:
+                    sw, sh = im.size
+                up_w, up_h = (2560, 1440) if sw >= sh else (1440, 2560)
+                if scale == 4:
+                    up_w, up_h = (3840, 2160) if sw >= sh else (2160, 3840)
+                return {
+                    "media_id": media_id,
+                    "encoded_image": raw,
+                    "width": up_w,
+                    "height": up_h,
+                }
+        except Exception as e:
+            log.warning(f"Local upscale failed: {e}, falling back to API...")
+
         await self.ensure_token()
         
         res_enum = self.UPSCALE_RESOLUTION_MAP.get(
@@ -1135,6 +1179,8 @@ class FlowClient:
         model_key: str = "veo_3_generate_video_fast",
         aspect_ratio: str = "LANDSCAPE",
         duration: int = 8,
+        ref_image_path: Optional[str] = None,
+        video_mode: str = "start_image",
     ) -> Optional[str]:
         """Submit video generation request. Returns operation/generation ID.
 

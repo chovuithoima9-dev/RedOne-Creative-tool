@@ -54,6 +54,420 @@ async def update_state():
     return get_update_state()
 
 
+@router.get("/bridge-status")
+async def bridge_status():
+    """Detailed live status of the Chrome extension bridge and active Flow tab."""
+    import time
+    from ..services.browser_bridge import bridge
+    return {
+        "status": bridge._ext_last_status,
+        "url": bridge._ext_last_url,
+        "email": bridge.get_active_account_email(),
+        "tier": bridge.get_active_account_tier(),
+        "credits": bridge.get_active_account_credits(),
+        "active_project_id": bridge.get_active_project_id(),
+        "last_poll_age_s": time.time() - bridge._ext_last_poll,
+        "is_live": bridge.is_extension_live(),
+        "has_ready_tab": bridge._ext_last_status == "ready",
+    }
+
+
+@router.get("/debug-tab")
+async def debug_tab():
+    """Inspect the live DOM, title, user, and WIZ data of the active Flow tab."""
+    from ..services.browser_bridge import bridge
+    return await bridge.batch_execute("DEBUG_DOM", {})
+
+
+@router.get("/test-debug-dom")
+async def test_debug_dom():
+    """Test DEBUG_DOM to verify extension version and tab state."""
+    from ..services.browser_bridge import bridge
+    return await bridge.batch_execute("DEBUG_DOM", {})
+
+
+@router.get("/test-recaptcha")
+async def test_recaptcha(action: str = "IMAGE_GENERATION"):
+    """Test harvesting reCAPTCHA token from active tab."""
+    from ..services.browser_bridge import bridge
+    site_key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
+    token = await bridge.harvest_recaptcha(site_key=site_key, action=action)
+    return {
+        "action": action,
+        "token_len": len(token) if token else 0,
+        "token_prefix": token[:30] if token else None,
+        "token_suffix": token[-30:] if token else None,
+        "token": token,
+    }
+
+
+@router.get("/active-cookies")
+async def active_cookies():
+    """Retrieve full live cookie list from Chrome bridge."""
+    from ..services.browser_bridge import bridge
+    res = await bridge.get_cookies(domains=["flow.google.com", ".flow.google.com", ".google.com", "google.com"])
+    return res
+
+
+@router.get("/reload-extension")
+async def reload_extension():
+    """Instruct the Chrome extension to reload its background worker."""
+    from ..services.browser_bridge import bridge
+    bridge.push_session_command("reload_extension")
+    return {"status": "command_pushed"}
+
+
+@router.get("/reload-tab")
+async def reload_tab():
+    """Instruct the Chrome extension to reload the Flow tab."""
+    from ..services.browser_bridge import bridge
+    bridge.push_session_command("reload_tab")
+    return {"status": "command_pushed"}
+
+
+
+@router.get("/test-direct-gen")
+async def test_direct_gen(project_id: Optional[str] = None):
+    """Directly test ogiZ0b image generation with inline reCAPTCHA minting."""
+    import uuid, random
+    from ..services.browser_bridge import bridge
+
+    pid = project_id or bridge.get_active_project_id() or "80f920a6-1a69-496c-94ab-ab3fddc2f621"
+    if not pid:
+        return {"error": "no active project in tab"}
+
+    source_path = f"/project/{pid}"
+
+    # Build payload with __MINT_RECAPTCHA__ placeholder — token will be
+    #    minted INLINE by the extension inside the same executeScript call
+    #    that sends the batchexecute request (prevents UNUSUAL_ACTIVITY).
+    client_ctx = [
+        None, 22, None, None, None,
+        pid,
+        None, None, None, None,
+        ["__MINT_RECAPTCHA__", 1],
+    ]
+    prompt_arr = [[["a tranquil japanese garden with cherry blossoms, 8k"]]]
+
+    # Google Flow UI always submits 4 candidates per generation batch
+    candidates = []
+    for _ in range(4):
+        c_seed = random.randint(100000000, 2147483647)
+        c_batch = str(uuid.uuid4()).upper()
+        c_op = str(uuid.uuid4()).upper()
+        candidates.append([
+            None, None, None, c_seed, 3, "HARBOR_SEAL", None,
+            client_ctx,
+            prompt_arr,
+            None, None, None,
+            c_batch, c_op,
+        ])
+
+    inner_payload = [
+        None,
+        candidates,
+        1,
+        client_ctx,
+        [str(uuid.uuid4()).upper()],
+    ]
+
+    res = await bridge.batch_execute(
+        rpc_id="ogiZ0b",
+        inner_payload=inner_payload,
+        source_path=source_path,
+        timeout_ms=120000,
+        recaptcha_action="IMAGE_GENERATION",
+    )
+    return {
+        "project_id": pid,
+        "res_status": res.get("status"),
+        "res_error": res.get("error"),
+        "has_rpc_result": res.get("rpc_result") is not None,
+        "rpc_result_preview": str(res.get("rpc_result"))[:300] if res.get("rpc_result") else None,
+    }
+
+
+@router.get("/test-direct-video-t2v")
+async def test_direct_video_t2v(project_id: Optional[str] = None):
+    """Directly test YhhmEf video generation with inline reCAPTCHA minting."""
+    import uuid
+    from ..services.browser_bridge import bridge
+
+    pid = project_id or bridge.get_active_project_id() or "80f920a6-1a69-496c-94ab-ab3fddc2f621"
+    client_ctx = [
+        None, 22, None, None, None,
+        pid,
+        None, None, None, None,
+        ["__MINT_RECAPTCHA__", 1],
+    ]
+    # 1. First call nzlxg (get credits / session warm)
+    res_credits = await bridge.batch_execute(
+        rpc_id="nzlxg",
+        inner_payload=[],
+        source_path=f"/project/{pid}",
+        timeout_ms=30000,
+    )
+
+    # 2. Then call YhhmEf with veo_3_1_t2v_lite (exact match to update3.har)
+    prompt_item = [None, None, [[["a tranquil drone shot of misty mountains, cinematic, 4k"]]]]
+    uuid_a = str(uuid.uuid4()).upper()
+    uuid_b = str(uuid.uuid4()).upper()
+    batch_uuid = str(uuid.uuid4()).upper()
+    candidate = [
+        prompt_item,
+        "veo_3_1_t2v_lite",
+        2,  # 16:9
+        None,
+        [None, None, None, None, uuid_a, uuid_b],
+    ]
+    inner_payload = [
+        [candidate],
+        client_ctx,
+        [batch_uuid, 2],
+    ]
+    res = await bridge.batch_execute(
+        rpc_id="YhhmEf",
+        inner_payload=inner_payload,
+        source_path=f"/project/{pid}",
+        timeout_ms=120000,
+        recaptcha_action="VIDEO_GENERATION",
+    )
+    return {
+        "project_id": pid,
+        "res_credits": res_credits.get("rpc_result"),
+        "raw_res": res,
+    }
+
+
+@router.get("/test-glabs-gen")
+async def test_glabs_gen():
+    """Test G-Labs Studio architecture: Python direct POST with harvested reCAPTCHA token."""
+    import uuid, random, json
+    import httpx
+    from ..services.browser_bridge import bridge
+
+    pid = bridge.get_active_project_id()
+    if not pid:
+        return {"error": "no active project in tab"}
+
+    import datetime
+    now_str = datetime.datetime.now().strftime("%b %d - %H:%M")
+    inner_create = ["projects/*", [None, [f"Flow Project ({now_str})"]], [None, 22]]
+    
+    email = bridge.get_active_account_email() or "user@gmail.com"
+    from ..services.flow_session import FlowSession
+    session = FlowSession(account_email=email)
+    c_res1 = await bridge.get_cookies(domains=[".flow.google.com", "flow.google.com", ".google.com", "google.com"])
+    cookies_list = c_res1.get("cookies", [])
+    session.update_cookies_from_list(cookies_list)
+    await session.bootstrap(force=True)
+
+    create_res = await session.execute("jHPbke", inner_create, source_path="/")
+    log.info(f"jHPbke create_res: {create_res}")
+    rpc_res = create_res.get("rpc_result")
+    if rpc_res and isinstance(rpc_res, list) and len(rpc_res) > 0 and isinstance(rpc_res[0], str):
+        pid = rpc_res[0]
+        log.info(f"Created fresh project via jHPbke: {pid}")
+    else:
+        pid = "d9ec99ab-368b-49e4-b641-e74719742745"
+        log.info(f"Fallback to G-Labs project: {pid}")
+
+    # 3. Harvest reCAPTCHA token from extension
+    try:
+        rc_token = await bridge.harvest_recaptcha(
+            site_key="6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV",
+            action="IMAGE_GENERATION",
+        )
+    except Exception as e:
+        return {"error": f"harvest_recaptcha failed: {e}"}
+
+    if not rc_token:
+        return {"error": "harvest_recaptcha returned empty token"}
+
+    # 4. Build payload with 1 candidate matching G-Labs Studio
+    client_ctx = [
+        None, 22, None, None, None,
+        pid,
+        None, None, None, None,
+        [rc_token, 1],
+    ]
+    prompt_arr = [[["con mèo"]]]
+
+    batch_uuid = str(uuid.uuid4()).upper()
+    op_uuid = str(uuid.uuid4()).upper()
+    c_seed = random.randint(100000, 999999)
+    candidates = [[
+        None, None, None, c_seed, 3, "HARBOR_SEAL", None,
+        client_ctx,
+        prompt_arr,
+        None, None, None,
+        batch_uuid, op_uuid,
+    ]]
+
+    inner_payload = [
+        None,
+        candidates,
+        1,
+        client_ctx,
+        [str(uuid.uuid4()).upper()],
+    ]
+
+    res = await session.execute("ogiZ0b", inner_payload, source_path="/")
+    return {
+        "project_id": pid,
+        "res_status": res.get("status"),
+        "res_error": res.get("error"),
+        "has_rpc_result": res.get("rpc_result") is not None,
+        "rpc_result_preview": str(res.get("rpc_result"))[:300] if res.get("rpc_result") else None,
+        "chunks_count": len(res.get("chunks", [])),
+    }
+
+
+@router.get("/test-bootstrap-session")
+async def test_bootstrap_session():
+    """Test full G-Labs FlowSession: bootstrap CSRF from flow.google.com/about + execute ogiZ0b."""
+    import uuid, random, json
+    from ..services.browser_bridge import bridge
+    from ..services.flow_session import FlowSession
+
+    pid = bridge.get_active_project_id()
+    if not pid:
+        return {"error": "no active project in tab"}
+
+    # 1. Harvest fresh reCAPTCHA token from tab
+    rc_token = await bridge.harvest_recaptcha(
+        site_key="6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV",
+        action="IMAGE_GENERATION",
+    )
+    if not rc_token:
+        return {"error": "harvest_recaptcha returned empty"}
+
+    # 2. Get cookies from browser
+    c_res = await bridge.get_cookies(domains=["flow.google.com", ".flow.google.com", ".google.com", "google.com"])
+    cookies = c_res.get("cookies", [])
+
+    # 3. Create FlowSession and bootstrap
+    email = bridge.get_active_account_email() or "user@gmail.com"
+    session = FlowSession(account_email=email)
+    session.update_cookies_from_list(cookies)
+    try:
+        await session.bootstrap(force=True)
+    except Exception as e:
+        return {"error": f"bootstrap failed: {e}"}
+
+    # 4. Build payload with 4 candidates
+    client_ctx = [
+        None, 22, None, None, None,
+        pid,
+        None, None, None, None,
+        [rc_token, 1],
+    ]
+    prompt_arr = [[["a tranquil japanese garden with cherry blossoms, 8k"]]]
+    candidates = []
+    batch_uuid = str(uuid.uuid4()).upper()
+    op_uuid = str(uuid.uuid4()).upper()
+    for i in range(4):
+        c_seed = random.randint(100000000, 2147483647)
+        c_batch = batch_uuid if i == 0 else str(uuid.uuid4()).upper()
+        c_op = op_uuid if i == 0 else str(uuid.uuid4()).upper()
+        candidates.append([
+            None, None, None, c_seed, 3, "HARBOR_SEAL", None,
+            client_ctx,
+            prompt_arr,
+            None, None, None,
+            c_batch, c_op,
+        ])
+
+    inner_payload = [
+        None,
+        candidates,
+        1,
+        client_ctx,
+        [str(uuid.uuid4()).upper()],
+    ]
+
+    source_path = f"/project/{pid}"
+    res = await session.execute(
+        rpc_id="ogiZ0b",
+        inner_payload=inner_payload,
+        source_path=source_path,
+        timeout_ms=60000,
+    )
+    return {
+        "bootstrap": {
+            "auth_index": session.auth_index,
+            "at": session.at_token[:20] + "..." if session.at_token else None,
+            "bl": session.build_label,
+            "sid": session.session_id,
+        },
+        "rc_token_len": len(rc_token),
+        "result_status": res.get("status"),
+        "result_error": res.get("error"),
+        "has_rpc_result": res.get("rpc_result") is not None,
+        "rpc_result_preview": str(res.get("rpc_result"))[:300] if res.get("rpc_result") else None,
+    }
+
+
+@router.get("/test-direct-video")
+async def test_direct_video():
+    """Directly test YhhmEf video generation."""
+    import uuid
+    from ..services.browser_bridge import bridge
+
+    pid = bridge.get_active_project_id()
+    if not pid:
+        return {"error": "no active project in tab"}
+
+    source_path = f"/project/{pid}"
+
+    # 1. Harvest fresh reCAPTCHA token for VIDEO_GENERATION
+    site_key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
+    recaptcha_token = await bridge.harvest_recaptcha(site_key=site_key, action="VIDEO_GENERATION")
+    if not recaptcha_token:
+        return {"error": "failed to harvest recaptcha token"}
+
+    client_ctx = [
+        None, 22, None, None, None,
+        pid,
+        None, None, None, None,
+        [recaptcha_token, 1],
+    ]
+
+    prompt_item = [None, None, [[["a playful kitten exploring a flower field, cinematic lighting"]]]]
+    model_name = "veo_3_1_t2v_lite"
+    uuid_a = str(uuid.uuid4()).upper()
+    uuid_b = str(uuid.uuid4()).upper()
+    candidate = [
+        prompt_item,
+        model_name,
+        2,
+        None,
+        [None, None, None, None, uuid_a, uuid_b],
+    ]
+
+    batch_uuid = str(uuid.uuid4()).upper()
+    inner_payload = [
+        [candidate],
+        client_ctx,
+        [batch_uuid, 2],
+    ]
+
+    res = await bridge.batch_execute(
+        rpc_id="YhhmEf",
+        inner_payload=inner_payload,
+        source_path=source_path,
+        timeout_ms=120000,
+    )
+    return {
+        "project_id": pid,
+        "token_len": len(recaptcha_token),
+        "res_status": res.get("status"),
+        "res_error": res.get("error"),
+        "has_rpc_result": res.get("rpc_result") is not None,
+        "rpc_result_preview": str(res.get("rpc_result"))[:300] if res.get("rpc_result") else None,
+    }
+
+
 # ─── In-app updater ────────────────────────────────────────────────
 
 async def _run_download_pipeline(download_url: str, asset_name: str | None,
@@ -283,3 +697,4 @@ async def apply_update():
     asyncio.create_task(_delayed_exit())
 
     return {"ok": True, "scheduled": True}
+

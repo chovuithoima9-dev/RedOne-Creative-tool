@@ -199,12 +199,16 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             prompt=item["prompt"],
             model_key=model,
             aspect_ratio=aspect,
-            reference_images=ref_media_ids or None,
+            reference_images=ref_paths or ref_media_ids or None,
         )
 
         out_dir = get_save_dir("image", task_id, task.get("name"))
         out_path = out_dir / f"{project_item_stem(task, item_id)}.png"
-        ok = await client.download_image(result["download_url"], str(out_path))
+        ok = await client.download_image(
+            result["download_url"],
+            str(out_path),
+            raw_bytes=result.get("_raw_bytes"),
+        )
         if not ok:
             raise RuntimeError("Image download failed")
 
@@ -464,14 +468,12 @@ async def cancel_image(task_id: int):
 
 
 def _find_item(item_id: int) -> tuple[Optional[dict], Optional[dict]]:
-    """Look up (task, item) by item_id across all tasks. Returns (None, None)
-    if not found. Only searches the last 200 tasks — enough for practical use,
-    since upscale is invoked from the currently visible gallery."""
-    for t in db.list_tasks(limit=200):
-        for it in db.get_task_items(t["id"]):
-            if it["id"] == item_id:
-                return t, it
-    return None, None
+    """Look up (task, item) by item_id directly from DB. Returns (None, None) if not found."""
+    it = db.get_item(item_id)
+    if not it:
+        return None, None
+    t = db.get_task(it.get("task_id"))
+    return t, it
 
 
 def _save_upscaled(item_id: int, resolution: str, raw_bytes: bytes, task: dict) -> Path:
@@ -488,7 +490,9 @@ def _save_upscaled(item_id: int, resolution: str, raw_bytes: bytes, task: dict) 
 
 async def _do_upscale_one(client, item_id: int, media_id: str, resolution: str, task: dict) -> dict:
     """Run one upscale call + save result. Raises on failure."""
-    r = await client.upscale_image(media_id, resolution=resolution)
+    src_row = db.get_item(item_id)
+    input_path = src_row.get("output_path") if src_row else None
+    r = await client.upscale_image(media_id, resolution=resolution, input_path=input_path)
     raw = r.get("encoded_image")
     if not raw:
         # Fallback path: response had fifeUrl instead of encodedImage
@@ -560,6 +564,17 @@ async def upscale_one_item(client, task: dict, item: dict) -> bool:
 
     c0 = _count_items_img(task_id)
     db.update_item(iid, status=ItemStatus.GENERATING.value, error_message=None)
+    # Optimistically mark source item as running in DB
+    src_row = db.get_item(src_item_id)
+    if src_row:
+        try:
+            s_ex = json.loads(src_row.get("extra_json") or "{}")
+        except Exception:
+            s_ex = {}
+        s_ex["upscale_status"] = "running"
+        s_ex["upscale_resolution"] = resolution
+        db.update_item(src_item_id, extra_json=json.dumps(s_ex))
+
     await hub.broadcast("upscale_started", {
         "item_id": src_item_id, "resolution": resolution,
         "index": min(c0["total"], c0["done"] + c0["error"] + 1), "total": c0["total"],
@@ -569,6 +584,18 @@ async def upscale_one_item(client, task: dict, item: dict) -> bool:
             raise RuntimeError("Thiếu media_id — ảnh tạo trước khi tool hỗ trợ upscale")
         r = await _do_upscale_one(client, src_item_id, media_id, resolution, src_task)
         db.update_item(iid, status=ItemStatus.COMPLETED.value, output_path=r["path"])
+
+        # Persist completed upscale state on the source item
+        if src_row:
+            try:
+                s_ex = json.loads(src_row.get("extra_json") or "{}")
+            except Exception:
+                s_ex = {}
+            s_ex["upscale_status"] = "done"
+            s_ex["upscale_resolution"] = resolution
+            s_ex["upscale_path"] = r["path"]
+            db.update_item(src_item_id, extra_json=json.dumps(s_ex))
+
         c = await _broadcast_progress_img(task_id)
         await hub.broadcast("upscale_completed", {
             "item_id": src_item_id, "resolution": resolution,
@@ -582,6 +609,17 @@ async def upscale_one_item(client, task: dict, item: dict) -> bool:
         friendly = friendly_error(str(e))
         log.warning(f"Upscale item={iid} (src={src_item_id}) failed: {e}")
         db.update_item(iid, status=ItemStatus.ERROR.value, error_message=friendly)
+
+        # Persist error upscale state on the source item
+        if src_row:
+            try:
+                s_ex = json.loads(src_row.get("extra_json") or "{}")
+            except Exception:
+                s_ex = {}
+            s_ex["upscale_status"] = "error"
+            s_ex["upscale_error"] = friendly
+            db.update_item(src_item_id, extra_json=json.dumps(s_ex))
+
         c = await _broadcast_progress_img(task_id)
         await hub.broadcast("upscale_error", {
             "item_id": src_item_id, "resolution": resolution, "error": friendly,

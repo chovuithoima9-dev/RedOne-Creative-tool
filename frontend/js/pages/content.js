@@ -3,18 +3,19 @@
 import { el, clear, toast, setLoading, icon, makeThumbnail, makeLazyVideoObserver, ensureFlowAccountOrWarn, openMediaViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton, makeItemRetryButton } from '../gallery_actions.js';
 
 // Form state survives navigation
 const form = {
   mode: 't2v',
   prompts: [''],
-  quality: 'lite_lp',   // mặc định: Veo 3.1 Lite [Lower Priority] — miễn phí
+  quality: 'fast',      // mặc định: Veo 3.1 Fast · 10 credit
   aspect: '16:9',
   resolution: '720p',
   duration: 8,
   concurrent: 1,
   videosPerPrompt: 1, // 1..4 — số video tạo cho mỗi prompt (biến thể khác seed)
+  videoMode: 'start_image', // start_image | start_end_image | components
   loop: false,        // I2V "Loop video": dùng cùng 1 ảnh làm khung đầu + khung cuối
   taskName: '',
   // Per-prompt reference images (I2V): same index as prompts
@@ -34,32 +35,25 @@ let _lastViewedTaskId = null;
 // Not persisted — lives for this session; a full reload falls back to defaults.
 const _favByGroup = new Map();
 
-// Duration options per model. Confirmed via labs.google network capture:
-//   Omni Flash internal key = abra_t2v_<N>s — has 4/6/8/10
-//   Veo 3.1 keys don't have duration suffix → always 8s for now
+// Duration options per model.
 const DURATION_BY_MODEL = {
   omni_flash: [4, 6, 8, 10],
-  lite:       [8],
-  fast:       [8],
+  lite:       [4, 6, 8],
+  fast:       [4, 6, 8],
   quality:    [8],
-  lite_lp:    [8],
 };
 
-// Models that work in each mode. Omni Flash gained I2V on 2026-07-20
-// (internal key abra_i2v_<N>s, confirmed via labs.google capture).
+// 4 active video models from Google Flow
 const MODELS_FOR_MODE = {
-  t2v: ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'],
-  i2v: ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'],
+  t2v: ['omni_flash', 'lite', 'fast', 'quality'],
+  i2v: ['omni_flash', 'lite', 'fast', 'quality'],
 };
-// Labels kept short so they fit the (narrow) config column without
-// overflowing into the dropdown arrow. The longer details (durations,
-// what "Lower Priority" means) live in the field-help line below.
+// Labels for video models dropdown
 const MODEL_LABELS = {
-  omni_flash: 'Omni Flash · 7–15 credit (theo độ dài)',
-  lite_lp:    'Veo 3.1 Lite · Miễn phí (chậm)',
-  lite:       'Veo 3.1 Lite · 5 credit',
-  fast:       'Veo 3.1 Fast · 10 credit',
-  quality:    'Veo 3.1 Quality · 100 credit',
+  omni_flash: 'Omni 1.1 Flash',
+  lite:       'Veo 3.1 – Lite',
+  fast:       'Veo 3.1 – Fast',
+  quality:    'Veo 3.1 – Quality',
 };
 
 function defaultTaskName(prefix = 'video') {
@@ -149,12 +143,31 @@ export function renderContent(root) {
               el('input', { type: 'file', accept: 'image/*', multiple: 'true',
                 id: 'cnt-image-file', style: { display: 'none' } }),
             ),
-            el('div', { id: 'cnt-ref-pairing', style: { marginTop: '8px' } }),
+            el('div', { class: 'field-group', style: { marginTop: '12px' } },
+              el('label', { class: 'field-label' }, 'Vị trí gán ảnh trong Flow'),
+              el('select', { class: 'select', id: 'cnt-video-mode',
+                onchange: (e) => {
+                  form.videoMode = e.target.value;
+                  const loopWrap = root.querySelector('#cnt-loop-wrap');
+                  if (loopWrap) {
+                    loopWrap.style.display = (form.videoMode === 'components') ? 'none' : 'flex';
+                  }
+                }
+              },
+                el('option', { value: 'start_image', ...(form.videoMode === 'start_image' ? { selected: 'true' } : {}) }, 'Khung hình đầu (Start Frame) — [Chuẩn I2V]'),
+                el('option', { value: 'start_end_image', ...(form.videoMode === 'start_end_image' ? { selected: 'true' } : {}) }, 'Khung hình đầu & cuối (First - Last Frame)'),
+                el('option', { value: 'components', ...(form.videoMode === 'components' ? { selected: 'true' } : {}) }, 'Thành phần tham chiếu (Ingredients / Reference)'),
+              ),
+              el('div', { class: 'field-help' },
+                'G-Labs Flow: Chọn Khung hình đầu để tạo chuyển động từ ảnh; chọn Thành phần để giữ phong cách/nhân vật.'),
+            ),
             // Loop video (I2V only) — reuse the SAME image as first + last
             // frame. Lives inside #i2v-image-block → auto-hidden in T2V mode.
             el('label', {
+              id: 'cnt-loop-wrap',
               style: {
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                display: form.videoMode === 'components' ? 'none' : 'flex',
+                alignItems: 'center', justifyContent: 'space-between',
                 gap: '12px', marginTop: '12px', padding: '10px 12px',
                 border: '1px solid var(--border)', borderRadius: 'var(--r-md)',
                 background: 'var(--bg-2)', cursor: 'pointer',
@@ -782,7 +795,8 @@ export function renderContent(root) {
         concurrent: form.concurrent,
         videos_per_prompt: form.videosPerPrompt,
         reference_images: ref_images,
-        loop: form.mode === 'i2v' && form.loop,   // chỉ I2V mới loop được
+        video_mode: form.mode === 'i2v' ? (root.querySelector('#cnt-video-mode')?.value || form.videoMode || 'start_image') : 'start_image',
+        loop: form.mode === 'i2v' && (form.loop || form.videoMode === 'start_end_image'),
         task_name: taskName,
       });
       // Nở seed gallery: N video mỗi prompt, giữ thứ tự prompt-major (khớp backend)
@@ -1182,6 +1196,17 @@ export function renderContent(root) {
             it.id != null
               ? makePromptEditButton({ taskId: taskState.id, item: it })
               : null,
+          )
+        : (it.status === 'error' && it.id != null)
+        ? el('div', { class: 'scene-actions' },
+            makeItemRetryButton(taskState.id, it.id),
+            el('button', { class: 'btn btn-sm btn-ghost btn-icon', title: 'Copy prompt', style: { marginLeft: 'auto' }, onclick: () => {
+              const p = (it.prompt || '').trim();
+              if (!p) return toast('Không có prompt để copy', 'warning');
+              navigator.clipboard.writeText(p);
+              toast('Đã copy prompt', 'success');
+            } }, icon('copy', 14)),
+            makePromptEditButton({ taskId: taskState.id, item: it }),
           )
         : null;
       // ⭐ đánh dấu video ưng ý của nhóm (chỉ khi N>1). Bấm sao → đặt biến thể

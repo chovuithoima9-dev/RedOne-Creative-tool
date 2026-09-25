@@ -438,3 +438,56 @@ async def upscale_video(
             shutil.rmtree(tmp_base, ignore_errors=True)
         except Exception:
             pass
+
+
+async def upscale_image_file(
+    input_path: str | Path,
+    output_path: str | Path,
+    scale: int = 4,
+    model: str = "realesrgan-x4plus",
+) -> Path:
+    """Upscale a single image file to 2x (2K) or 4x (4K) using Real-ESRGAN NCNN Vulkan.
+
+    GPU-accelerated via Vulkan (~1.8s on RTX 4060 Ti). Falls back to PIL Lanczos
+    if NCNN executable or Vulkan is not available.
+    """
+    inp = Path(input_path).resolve()
+    out = Path(output_path).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    if not inp.exists():
+        raise FileNotFoundError(f"Input image not found: {inp}")
+
+    exe = _find_ncnn_exe()
+    if exe and exe.exists():
+        models_dir = exe.parent / "models"
+        s_val = str(max(2, min(4, scale)))
+        cmd = [
+            str(exe),
+            "-i", str(inp),
+            "-o", str(out),
+            "-s", s_val,
+            "-m", str(models_dir),
+            "-n", model,
+        ]
+        log.info(f"[upscaler] Running NCNN Vulkan image upscale: {inp.name} -> {out.name} (scale={s_val})")
+        proc = await asyncio.create_subprocess_exec(*cmd, **subprocess_no_window_kwargs())
+        rc = await proc.wait()
+        if rc == 0 and out.exists() and out.stat().st_size > 0:
+            log.info(f"[upscaler] NCNN Vulkan image upscale succeeded: {out.stat().st_size} bytes")
+            return out
+        else:
+            log.warning(f"[upscaler] NCNN Vulkan failed (rc={rc}), falling back to PIL Lanczos...")
+
+    # PIL Lanczos high-fidelity fallback
+    from PIL import Image
+    with Image.open(inp) as im:
+        w, h = im.size
+        target_w = w * scale
+        target_h = h * scale
+        res = im.resize((target_w, target_h), Image.LANCZOS)
+        fmt = "JPEG" if out.suffix.lower() in (".jpg", ".jpeg") else "PNG"
+        if fmt == "JPEG" and res.mode in ("RGBA", "P"):
+            res = res.convert("RGB")
+        res.save(out, fmt, quality=95)
+    return out

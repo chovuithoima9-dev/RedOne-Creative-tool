@@ -252,11 +252,10 @@ class AccountTier(str, Enum):
 
 
 VIDEO_MODELS = {
-    "veo_3_fast": {"name": "Veo 3 Fast", "cost": 10},
-    "veo_3_quality": {"name": "Veo 3 Quality", "cost": 100},
-    "veo_3_1_fast": {"name": "Veo 3.1 Fast", "cost": 20},
-    "veo_3_1_quality": {"name": "Veo 3.1 Quality", "cost": 100},
-    "veo_3_1_lite": {"name": "Veo 3.1 Lite (Low Priority)", "cost": 5},
+    "omni_flash": {"name": "Omni 1.1 Flash", "cost": 10},
+    "lite": {"name": "Veo 3.1 – Lite", "cost": 5},
+    "fast": {"name": "Veo 3.1 – Fast", "cost": 10},
+    "quality": {"name": "Veo 3.1 – Quality", "cost": 100},
 }
 
 # NOTE: nothing reads this dict — the real model list lives in the frontend
@@ -332,66 +331,51 @@ def cost_for_model_key(model_key: str) -> int:
     return 100
 
 
-# Static model keys for Veo 3.1 (always 8s default — Google internally
-# locks duration here. To support 4s/6s for Veo we'd need to capture each
-# duration variant's key from the labs.google network tab.)
+# Static model keys for Veo 3.1 & Omni (Standard G-Labs / Flow batchexecute keys)
 T2V_MODEL_MAP = {
-    "lite":    "veo_3_1_t2v_lite",
-    "fast":    "veo_3_1_t2v_fast_ultra",
-    "quality": "veo_3_1_t2v",
-    "lite_lp": "veo_3_1_t2v_lite_low_priority",
+    "omni_flash": "omni_flash",
+    "lite":       "veo_3_1_t2v_lite",
+    "fast":       "veo_3_1_t2v_fast",
+    "quality":    "veo_3_1_t2v_quality",
+    "lite_lp":    "veo_3_1_t2v_lite",
 }
 
 I2V_MODEL_MAP = {
-    "lite":    "veo_3_1_i2v_lite",
-    "fast":    "veo_3_1_i2v_s_fast_ultra",
-    "quality": "veo_3_1_i2v_s",
-    "lite_lp": "veo_3_1_i2v_lite_low_priority",
+    "omni_flash": "omni_flash",
+    "lite":       "veo_3_1_i2v_lite",
+    "fast":       "veo_3_1_i2v_fast",
+    "quality":    "veo_3_1_i2v_quality",
+    "lite_lp":    "veo_3_1_i2v_lite",
 }
 
-# Extend video model keys (Omni Flash doesn't currently support extend)
+# Extend video model keys
 EXTEND_MODEL_MAP = {
-    "lite":    "veo_3_1_extension_lite",
-    "fast":    "veo_3_1_extension_fast_ultra",
-    "quality": "veo_3_1_extension_t2v",
-    "lite_lp": "veo_3_1_extension_lite_low_priority",
+    "omni_flash": "omni_flash",
+    "lite":       "veo_3_1_t2v_lite",
+    "fast":       "veo_3_1_t2v_fast",
+    "quality":    "veo_3_1_t2v_quality",
+    "lite_lp":    "veo_3_1_t2v_lite",
 }
 
-# Interpolation (first-frame + last-frame → video) model keys. Used by the
-# I2V "Loop video" feature: same image as startImage AND endImage → a clip
-# that ends where it started. Endpoint: video:batchAsyncGenerateVideoStartAndEndImage.
-#   CONFIRMED via labs.google HAR capture: lite_lp = veo_3_1_interpolation_lite_low_priority.
-#   Other tiers follow the same naming pattern as T2V/I2V (best-guess until
-#   captured); fall back to the confirmed lite_lp key on any miss.
+# Interpolation (first-frame + last-frame -> video) model keys.
 INTERPOLATION_MODEL_MAP = {
-    "lite_lp": "veo_3_1_interpolation_lite_low_priority",   # CONFIRMED
-    "lite":    "veo_3_1_interpolation_lite",                # guess
-    "fast":    "veo_3_1_interpolation_fast_ultra",          # guess
-    "quality": "veo_3_1_interpolation",                     # guess
+    "omni_flash": "omni_flash",
+    "lite":       "veo_3_1_i2v_lite",
+    "fast":       "veo_3_1_i2v_fast",
+    "quality":    "veo_3_1_i2v_quality",
+    "lite_lp":    "veo_3_1_i2v_lite",
 }
 
 
 def interpolation_model_for(quality: str) -> str:
-    """Model key for first+last-frame interpolation (Loop video). Omni Flash
-    has no interpolation variant → falls back to the free lite_lp key."""
-    return INTERPOLATION_MODEL_MAP.get(quality, INTERPOLATION_MODEL_MAP["lite_lp"])
+    """Model key for first+last-frame interpolation (Loop video)."""
+    return INTERPOLATION_MODEL_MAP.get(quality, INTERPOLATION_MODEL_MAP["lite"])
 
 # Allowed duration options (seconds) per model preset.
-#
-# CONFIRMED via labs.google network capture:
-#   Omni Flash uses `abra_<mode>_<N>s` pattern — duration encoded in key.
-#
-# UNCONFIRMED:
-#   Veo 3.1 (lite/fast/quality/lite_lp) — capture only showed
-#   `veo_3_1_t2v_lite` etc. without a duration suffix. Google may always
-#   render at 8s for those keys. Until we capture an actual 4s/6s Veo
-#   payload, we only expose 8s for Veo models.
 VIDEO_DURATIONS_BY_MODEL = {
     "omni_flash": [4, 6, 8, 10],
-    "lite":       [8],
-    "fast":       [8],
+    "fast":       [4, 6, 8],
     "quality":    [8],
-    "lite_lp":    [8],
 }
 
 DEFAULT_VIDEO_DURATION = 8

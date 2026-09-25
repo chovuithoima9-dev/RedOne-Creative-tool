@@ -3,7 +3,7 @@
 import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, openMediaViewer, openCompareViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton, makeItemRetryButton } from '../gallery_actions.js';
 
 // ── Per-form state that survives navigation (singleton, module-level) ──
 const form = {
@@ -817,9 +817,23 @@ export function renderImage(root) {
           actions.appendChild(makePromptEditButton({ taskId: taskState.id, item: it }));
         }
         info.appendChild(actions);
+      } else if (it.status === 'error' && it.id != null) {
+        const errorActions = el('div', { class: 'scene-actions' },
+          makeItemRetryButton(taskState.id, it.id),
+          el('button', {
+            class: 'btn btn-sm btn-ghost btn-icon', title: 'Copy prompt',
+            style: { marginLeft: 'auto' },
+            onclick: () => {
+              const p = (it.prompt || '').trim();
+              if (!p) return toast('Không có prompt để copy', 'warning');
+              navigator.clipboard.writeText(p);
+              toast('Đã copy prompt', 'success');
+            },
+          }, icon('copy', 14)),
+          makePromptEditButton({ taskId: taskState.id, item: it }),
+        );
+        info.appendChild(errorActions);
       }
-      // (Per-card "Gen lại" removed — regen is now on the selection toolbar:
-      //  tick cards → "Gen lại". Keeps cards clean + avoids layout overflow.)
       card.appendChild(info);
       // Attach checkbox only if file exists server-side
       if (it.status === 'done' && it.output_path) {

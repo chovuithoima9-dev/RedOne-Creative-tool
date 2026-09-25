@@ -35,6 +35,7 @@ class StartTaskRequest(BaseModel):
     reference_images: Optional[list[str]] = None  # uploaded image paths
     character_images: Optional[dict] = None
     loop: bool = False               # I2V "Loop video": reuse the image as first+last frame
+    video_mode: Optional[str] = "start_image"  # start_image | start_end_image | components
     task_name: Optional[str] = None
 
 
@@ -247,6 +248,7 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
     await hub.broadcast("item_status", {
         "task_id": task_id, "item_id": item_id,
         "status": ItemStatus.GENERATING.value,
+        "prompt": item.get("prompt", ""),
     })
     # Small jitter so concurrent items don't hit Google at the exact same ms.
     await asyncio.sleep(_rng.uniform(0.0, 1.5))
@@ -256,26 +258,28 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
     try:
         ref_image_path = None
         loop = False
+        video_mode = "start_image"
         if item.get("extra_json"):
             extra = json.loads(item["extra_json"])
             ref_image_path = extra.get("reference_image")
             loop = bool(extra.get("loop"))
+            video_mode = extra.get("video_mode", "start_end_image" if loop else "start_image")
         ref_media = None
-        if ref_image_path and Path(ref_image_path).exists():
-            ref_media = await client.upload_image(ref_image_path)
+        has_ref = bool(ref_image_path and Path(ref_image_path).exists())
+        if has_ref:
+            try:
+                ref_media = await client.upload_image(ref_image_path)
+            except Exception as up_err:
+                log.warning(f"client.upload_image error: {up_err} — FlowUIWorker will attach reference image directly from disk")
 
-        # "Loop video" only applies with a reference image — it reuses that
+        # "Loop video" or "start_end_image" only applies with a reference image — it reuses that
         # image as BOTH first and last frame (interpolation) so the clip ends
         # where it started. No ref image → nothing to loop.
-        loop = loop and bool(ref_media)
-        mode = "i2v" if ref_media else "t2v"
+        is_loop = (loop or video_mode == "start_end_image") and has_ref
+        mode = "i2v" if has_ref else "t2v"
         eff_quality = quality
-        # Omni Flash now HAS a native I2V model (abra_i2v_<N>s, confirmed via
-        # labs.google HAR 2026-07-20), so the old fall-back to Veo lite_lp is
-        # gone. It still has no interpolation model though — `loop` below
-        # routes through interpolation_model_for(), which falls back on its own.
         duration_s = int(task.get("duration") or 8)
-        if loop:
+        if is_loop:
             # Interpolation model (first+last frame). Omni Flash has none → lite_lp.
             model_key = interpolation_model_for(eff_quality)
         else:
@@ -301,8 +305,10 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
                 model_key=model_key,
                 aspect_ratio=aspect,
                 reference_image=ref_media,
-                end_image=(ref_media if loop else None),   # same image → loop
+                end_image=(ref_media if is_loop else None),   # same image → loop
                 duration=duration_s,
+                ref_image_path=ref_image_path,
+                video_mode=video_mode,
             )
             done_state = await client.wait_for_completion(workflow)
             if done_state and done_state.get("state") != "FAILED":
@@ -341,6 +347,8 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
         await hub.broadcast("item_completed", {
             "task_id": task_id, "item_id": item_id,
             "output_path": str(out_path),
+            "media_id": media_id,
+            "prompt": item.get("prompt", ""),
         })
         # ── Firebase tracking (best-effort) ──
         try:
@@ -542,6 +550,12 @@ async def start_content_task(body: StartTaskRequest):
             ref = body.reference_images[i]
             if ref:
                 extra["reference_image"] = ref
+                if body.video_mode:
+                    extra["video_mode"] = body.video_mode
+                elif body.loop:
+                    extra["video_mode"] = "start_end_image"
+                else:
+                    extra["video_mode"] = "start_image"
                 if body.loop:
                     extra["loop"] = True   # reuse this image as the last frame too
         # N video mỗi prompt — mỗi bản mang cùng `extra` (i2v: cùng ảnh frame-đầu → N video khác seed).

@@ -36,6 +36,13 @@ from .routers import (
 from .queue_manager import queue as task_queue, shakker_queue
 
 # ── Logging ──────────────────────────────────────────────────
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 log_file = DATA_DIR / "app.log"
 logging.basicConfig(
     level=logging.INFO,

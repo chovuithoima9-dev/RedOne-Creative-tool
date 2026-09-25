@@ -102,39 +102,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             } catch (_) { /* ignore */ }
         }
     }
-    // Anti-idle mouse jiggle: only when tasks are actively running AND
-    // at least 2 minutes since last jiggle (avoids excessive injection).
-    if (alarm.name === "antiIdle" && _inFlight > 0) {
-        const minInterval = 120000 + Math.floor(Math.random() * 120000);
-        if (Date.now() - _lastJiggleAt < minInterval) return;
-        _lastJiggleAt = Date.now();
-        try {
-            const tab = await _findLabsTab();
-            if (!tab) return;
-            await chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                world: "MAIN",
-                func: () => {
-                    try {
-                        // Random scroll down then back up
-                        const scrollY = Math.floor(200 + Math.random() * 400);
-                        window.scrollBy(0, scrollY);
-                        setTimeout(() => {
-                            try { window.scrollBy(0, -scrollY); } catch (_) { }
-                        }, 500 + Math.floor(Math.random() * 1000));
-                        // Random mouse move
-                        const x = Math.floor(100 + Math.random() * 700);
-                        const y = Math.floor(100 + Math.random() * 400);
-                        const ev = new MouseEvent("mousemove", {
-                            clientX: x, clientY: y,
-                            bubbles: true, cancelable: true, view: window,
-                        });
-                        document.dispatchEvent(ev);
-                    } catch (_) { /* best effort */ }
-                },
-            });
-        } catch (_) { /* best effort */ }
-    }
+    // Anti-idle is handled passively via Web Audio keep-alive in content.js.
+    // NEVER inject synthetic MouseEvents (event.isTrusted === false) as BotGuard explicitly flags them.
 });
 
 chrome.runtime.onInstalled.addListener(() => _pollLoop());
@@ -680,7 +649,7 @@ async function _doRecaptchaTask(task) {
                             }
                         }
                     }
-                    if (!key) return { token: null, error: "no sitekey found in page" };
+                    if (!key) key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
                     await new Promise(resolve => grecaptcha.enterprise.ready(resolve));
                     // 15s timeout: grecaptcha.execute can hang indefinitely
                     // when reCAPTCHA is in a bad state. G-Labs uses the same
@@ -866,6 +835,11 @@ async function _doBatchExecuteTask(task) {
     const innerPayload = p.inner_payload; // JS value — will be JSON.stringify'd
     const sourcePath = String(p.source_path || "/");
     const timeoutMs = Math.max(5000, Math.min(300000, Number(p.timeout_ms) || 120000));
+    // Inline reCAPTCHA: when set, token is minted INSIDE the same executeScript
+    // that sends the batchexecute — keeping token + request in the same execution
+    // context and TLS session. This prevents Google's UNUSUAL_ACTIVITY detection
+    // which fires when a token minted in one context is used in another.
+    const recaptchaAction = String(p.recaptcha_action || "");
 
     if (!rpcId) return { status: 0, error: "missing rpc_id" };
 
@@ -876,8 +850,65 @@ async function _doBatchExecuteTask(task) {
         const results = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             world: "MAIN",
-            func: async (rpcIdArg, innerPayloadJson, sourcePathArg, timeoutMsArg) => {
+            func: async (rpcIdArg, innerPayloadJson, sourcePathArg, timeoutMsArg, recaptchaActionArg) => {
                 try {
+                    if (rpcIdArg === "DEBUG_DOM") {
+                        const w = window.WIZ_global_data || {};
+                        return {
+                            status: 200,
+                            rpc_result: {
+                                title: document.title,
+                                url: window.location.href,
+                                at: w.SNlM0e || null,
+                                fSid: w.FdrFJe || null,
+                                bl: w.cfb2h || null,
+                                cookiesLen: document.cookie ? document.cookie.length : 0,
+                                cookiesHasOSID: document.cookie.includes("OSID"),
+                                cookiesHasSID: document.cookie.includes("SID="),
+                                hasGrecaptcha: typeof grecaptcha !== "undefined" && !!grecaptcha.enterprise,
+                                innerText: (document.body ? document.body.innerText : "").substring(0, 1000),
+                            }
+                        };
+                    }
+
+                    // ── Inline reCAPTCHA minting ──────────────────────────────
+                    // When recaptchaActionArg is set, mint the token RIGHT HERE
+                    // in the same execution context that will send the request.
+                    // This matches what Google Flow's Angular SPA does: mint →
+                    // build payload → fetch() all in one synchronous-like flow.
+                    // Previously we minted in a SEPARATE executeScript call and
+                    // passed the token string back through Python, which caused
+                    // Google to flag as UNUSUAL_ACTIVITY (context mismatch).
+                    let finalPayloadJson = innerPayloadJson;
+                    if (recaptchaActionArg) {
+                        try {
+                            const SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
+                            if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise) {
+                                return { status: 0, error: "grecaptcha.enterprise not loaded — cannot mint inline token" };
+                            }
+                            await new Promise(r => grecaptcha.enterprise.ready(r));
+                            const rcToken = await Promise.race([
+                                grecaptcha.enterprise.execute(SITE_KEY, { action: recaptchaActionArg }),
+                                new Promise((_, reject) => setTimeout(
+                                    () => reject(new Error("reCAPTCHA inline mint timeout (15s)")),
+                                    15000,
+                                )),
+                            ]);
+                            console.log("[RedOne BOQ] Inline reCAPTCHA minted:", rcToken.substring(0, 30) + "...");
+                            // Replace placeholder with real token (keeps JSON valid)
+                            finalPayloadJson = innerPayloadJson.replaceAll(
+                                '"__MINT_RECAPTCHA__"',
+                                JSON.stringify(rcToken),
+                            );
+                            if (finalPayloadJson.includes("__MINT_RECAPTCHA__")) {
+                                finalPayloadJson = finalPayloadJson.replaceAll("__MINT_RECAPTCHA__", rcToken);
+                            }
+                            console.log("[RedOne BOQ] Placeholder replaced successfully, token len:", rcToken.length);
+                        } catch (rcErr) {
+                            return { status: 0, error: "inline reCAPTCHA failed: " + (rcErr.message || String(rcErr)) };
+                        }
+                    }
+
                     // 1) Read WIZ_global_data for CSRF token + build label
                     // SNlM0e = CSRF/XSRF token (at= param), FdrFJe = session ID (f.sid param)
                     const wgd = window.WIZ_global_data || {};
@@ -888,21 +919,24 @@ async function _doBatchExecuteTask(task) {
                         return { status: 0, error: "WIZ_global_data.SNlM0e (CSRF token) not found — page not fully loaded?" };
                     }
 
-                    // 2) Build f.req in BOQ format
-                    const fReq = JSON.stringify([[[rpcIdArg, innerPayloadJson, null, "generic"]]]);
+                    // 2) Build f.req in BOQ format (uses finalPayloadJson which has real token if minted inline)
+                    const fReq = JSON.stringify([[[rpcIdArg, finalPayloadJson, null, "generic"]]]);
                     const body = new URLSearchParams();
                     body.set("f.req", fReq);
                     body.set("at", atToken);
 
                     // DEBUG: log what we're sending
-                    console.log("[RedOne BOQ] rpcId:", rpcIdArg);
-                    console.log("[RedOne BOQ] innerPayloadJson (first 300):", innerPayloadJson.substring(0, 300));
-                    console.log("[RedOne BOQ] fReq (first 300):", fReq.substring(0, 300));
+                    console.log("[RedOne BOQ] rpcId:", rpcIdArg, recaptchaActionArg ? "(inline reCAPTCHA)" : "(no reCAPTCHA)");
+                    console.log("[RedOne BOQ] payload (first 300):", finalPayloadJson.substring(0, 300));
                     console.log("[RedOne BOQ] at:", atToken.substring(0, 30) + "...");
                     console.log("[RedOne BOQ] buildLabel:", buildLabel);
 
                     // 3) Build URL (standard BOQ batchexecute path — cookies automatically handled by browser in MAIN world)
-                    const url = `/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${encodeURIComponent(rpcIdArg)}&source-path=${encodeURIComponent(sourcePathArg)}&bl=${encodeURIComponent(buildLabel)}&f.sid=${encodeURIComponent(fSid)}&hl=vi&_reqid=${Math.floor(Math.random() * 900000) + 100000}&rt=c`;
+                    // Support multi-login /u/N/ prefix (same as HAR capture)
+                    const authUserMatch = (window.location.pathname || "").match(/^\/u\/(\d+)/);
+                    const basePath = authUserMatch ? `/u/${authUserMatch[1]}/_/AiSandboxAngularFrontend/data/batchexecute` : `/_/AiSandboxAngularFrontend/data/batchexecute`;
+                    const pageHl = document.documentElement.lang || (navigator.language && navigator.language.startsWith("vi") ? "vi" : "en") || "vi";
+                    const url = `${basePath}?rpcids=${encodeURIComponent(rpcIdArg)}&source-path=${encodeURIComponent(sourcePathArg)}&bl=${encodeURIComponent(buildLabel)}&f.sid=${encodeURIComponent(fSid)}&hl=${encodeURIComponent(pageHl)}&_reqid=${Math.floor(Math.random() * 900000) + 100000}&rt=c`;
 
                     // 4) POST (same-origin, browser attaches cookies automatically)
                     const ac = new AbortController();
@@ -912,6 +946,10 @@ async function _doBatchExecuteTask(task) {
                         headers: {
                             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
                             "X-Same-Domain": "1",
+                            "x-browser-channel": "stable",
+                            "x-browser-copyright": "Copyright 2026 Google LLC. All Rights Reserved.",
+                            "x-browser-validation": "gatHVmB+6BMZgeBsxyVmI0c15LA=",
+                            "x-browser-year": "2026",
                         },
                         body: body.toString(),
                         signal: ac.signal,
@@ -971,14 +1009,14 @@ async function _doBatchExecuteTask(task) {
                     const activeProjectId = projectMatch ? projectMatch[1] : null;
 
                     if (rpcError) {
-                        return { status: 200, error: "RPC error: " + JSON.stringify(rpcError), rpc_result: null, chunks, active_project_id: activeProjectId };
+                        return { status: 200, error: "RPC error: " + JSON.stringify(rpcError), rpc_result: null, chunks, active_project_id: activeProjectId, final_payload_preview: finalPayloadJson.substring(0, 300) };
                     }
                     return { status: 200, rpc_result: rpcResult, chunks, active_project_id: activeProjectId };
                 } catch (err) {
                     return { status: 0, error: "batchexecute: " + (err.message || String(err)) };
                 }
             },
-            args: [rpcId, JSON.stringify(innerPayload), sourcePath, timeoutMs],
+            args: [rpcId, JSON.stringify(innerPayload), sourcePath, timeoutMs, recaptchaAction],
         });
         return (results && results[0] && results[0].result) || { status: 0, error: "no script result" };
     } catch (e) {
@@ -1021,116 +1059,39 @@ async function _doInitFlowProjectTask(task) {
     if (!tab) return { error: "no flow.google.com tab" };
 
     const currentUrl = tab.url || tab.pendingUrl || "";
-    const targetPid = task.payload?.target_project_id;
 
-    // Preserve user routing prefix (/u/1/, /u/2/, etc.) without polluting with query params
-    const uMatch = currentUrl.match(/\/(u\/\d+)\b/);
-    const userPrefix = uMatch ? `/${uMatch[1]}` : "";
-
-    const buildProjectUrl = (pid) => `https://flow.google.com${userPrefix}/project/${pid}`;
-
-    // A) If a target project was specified, navigate directly to it preserving user session
-    if (targetPid) {
-        const targetUrl = buildProjectUrl(targetPid);
-        if (!currentUrl.includes(targetPid)) {
-            console.log(`[RedOne] Navigating Flow tab to target project: ${targetPid} (url: ${targetUrl})`);
-            await chrome.tabs.update(tab.id, { url: targetUrl });
-            for (let i = 0; i < 30; i++) {
-                await new Promise(r => setTimeout(r, 500));
-                const updatedTab = await chrome.tabs.get(tab.id).catch(() => null);
-                const u = updatedTab ? (updatedTab.url || "") : "";
-                if (u.includes(targetPid)) {
-                    // Check if page ended up on "Project not found"
-                    await new Promise(r => setTimeout(r, 1200));
-                    const isError = await _checkIfTabHasProjectNotFound(tab.id);
-                    if (isError) {
-                        console.warn(`[RedOne] Project ${targetPid} not found. Recovering tab back to homepage...`);
-                        const homeUrl = `https://flow.google.com${userPrefix}/`;
-                        await chrome.tabs.update(tab.id, { url: homeUrl });
-                        return { error: "project_not_found", project_id: targetPid };
-                    }
-                    // Give Angular SPA time to initialize grecaptcha.enterprise
-                    await new Promise(r => setTimeout(r, 1000));
-                    return { project_id: targetPid, status: "navigated" };
-                }
-            }
-        }
-        return { project_id: targetPid, status: "already_open" };
-    }
-
-    // B) If already open to a project and not forcing new
+    // A) If tab is ALREADY on ANY project page (e.g. /project/<uuid>):
+    // NEVER navigate, reload, or change the URL! Matches G-Labs Studio architecture.
     const match = currentUrl.match(/\/project\/([a-zA-Z0-9_-]{36})/);
-    if (match && match[1] && !task.payload?.force_new) {
+    if (match && match[1]) {
+        console.log(`[RedOne] Preserving user's active Flow project: ${match[1]}`);
         return { project_id: match[1], status: "already_open" };
     }
 
-    // C) Try to trigger real project navigation / creation via the DOM in the tab
+    // B) If tab is on Flow but not on a specific project page, inspect DOM for an existing project link
     try {
         const domResult = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             world: "MAIN",
             func: () => {
-                // 1) Look for existing project links if not forcing new
                 const projLinks = Array.from(document.querySelectorAll('a[href*="/project/"]'));
                 for (const a of projLinks) {
                     const m = (a.getAttribute("href") || "").match(/\/project\/([a-zA-Z0-9_-]{36})/);
-                    if (m && m[1]) {
-                        return { action: "found_existing", id: m[1] };
-                    }
+                    if (m && m[1]) return m[1];
                 }
-
-                // 2) Look for "+ Dự án mới" / "+ New project" button
-                const allButtons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-                const newProjBtn = allButtons.find(b => {
-                    const txt = (b.textContent || "").trim().toLowerCase();
-                    const aria = (b.getAttribute("aria-label") || "").toLowerCase();
-                    return txt.includes("dự án mới") || txt.includes("new project") ||
-                           aria.includes("dự án mới") || aria.includes("new project") ||
-                           b.classList.contains("sidebar-upload-btn");
-                });
-
-                if (newProjBtn) {
-                    newProjBtn.click();
-                    return { action: "clicked_new_button" };
-                }
-
-                return { action: "none_found" };
+                return null;
             },
         });
-
-        const res = (domResult && domResult[0] && domResult[0].result) || {};
-        if (res.action === "found_existing" && res.id) {
-            console.log(`[RedOne] Navigating to existing project from DOM: ${res.id}`);
-            await chrome.tabs.update(tab.id, { url: buildProjectUrl(res.id) });
-            await new Promise(r => setTimeout(r, 2000));
-            return { project_id: res.id, status: "navigated" };
-        }
-
-        // Wait up to 10s for the tab URL to navigate to /project/<uuid>
-        for (let i = 0; i < 20; i++) {
-            await new Promise(r => setTimeout(r, 500));
-            const updatedTab = await chrome.tabs.get(tab.id).catch(() => null);
-            const u = updatedTab ? (updatedTab.url || "") : "";
-            const m = u.match(/\/project\/([a-zA-Z0-9_-]{36})/);
-            if (m && m[1]) {
-                console.log(`[RedOne] Successfully navigated to Flow project: ${m[1]}`);
-                await new Promise(r => setTimeout(r, 1500));
-                return { project_id: m[1], status: "navigated" };
-            }
+        const foundId = (domResult && domResult[0] && domResult[0].result) || null;
+        if (foundId) {
+            console.log(`[RedOne] Detected existing project from page: ${foundId}`);
+            return { project_id: foundId, status: "found_existing" };
         }
     } catch (err) {
-        console.warn("[RedOne] DOM init project error:", err);
+        console.warn("[RedOne] DOM inspect project error:", err);
     }
 
-    // Check tab URL one last time
-    const finalTab = await chrome.tabs.get(tab.id).catch(() => null);
-    const finalUrl = finalTab ? (finalTab.url || "") : "";
-    const finalMatch = finalUrl.match(/\/project\/([a-zA-Z0-9_-]{36})/);
-    if (finalMatch && finalMatch[1]) {
-        return { project_id: finalMatch[1], status: "found_in_url" };
-    }
-
-    return { error: "Không thể tự tạo dự án qua giao diện. Vui lòng bấm '+ Dự án mới' trong tab flow.google.com rồi thử lại." };
+    return { error: "Không tìm thấy dự án trong tab flow.google.com. Vui lòng mở hoặc chọn một dự án trong tab Chrome." };
 }
 
 
@@ -1143,7 +1104,11 @@ async function _executeSessionCommand(cmd) {
     const command = cmd.cmd || cmd.command;
     const params = cmd.params || {};
     try {
-        if (command === "set_target_email") {
+        if (command === "reload_extension") {
+            console.log("[Extension] Reloading extension on command...");
+            chrome.runtime.reload();
+            return;
+        } else if (command === "set_target_email") {
             _targetGoogleEmail = params.email || null;
             chrome.storage.local.set({ targetGoogleEmail: _targetGoogleEmail });
             console.log(`[Extension] Set target Google login email: ${_targetGoogleEmail}`);
@@ -1155,48 +1120,6 @@ async function _executeSessionCommand(cmd) {
                     const url = `https://${c.domain.replace(/^\./, "")}${c.path}`;
                     await chrome.cookies.remove({ url, name: c.name });
                 }
-            }
-        } else if (command === "reload_tab") {
-            // F5 reload the labs.google tab
-            const tab = await _findLabsTab();
-            if (tab) {
-                await chrome.tabs.reload(tab.id);
-                await new Promise((resolve) => {
-                    const listener = (id, info) => {
-                        if (id === tab.id && info.status === "complete") {
-                            chrome.tabs.onUpdated.removeListener(listener);
-                            resolve();
-                        }
-                    };
-                    chrome.tabs.onUpdated.addListener(listener);
-                    setTimeout(() => {
-                        chrome.tabs.onUpdated.removeListener(listener);
-                        resolve();
-                    }, 15000);
-                });
-            }
-        } else if (command === "navigate_toggle") {
-            // Toggle between /tools/flow and /fx to reset page session state
-            const tab = await _findLabsTab();
-            if (tab) {
-                const currentUrl = (tab.url || "");
-                const nextUrl = currentUrl.includes("flow.google.com")
-                    ? "https://labs.google/fx"
-                    : "https://flow.google.com";
-                await chrome.tabs.update(tab.id, { url: nextUrl });
-                await new Promise((resolve) => {
-                    const listener = (id, info) => {
-                        if (id === tab.id && info.status === "complete") {
-                            chrome.tabs.onUpdated.removeListener(listener);
-                            resolve();
-                        }
-                    };
-                    chrome.tabs.onUpdated.addListener(listener);
-                    setTimeout(() => {
-                        chrome.tabs.onUpdated.removeListener(listener);
-                        resolve();
-                    }, 15000);
-                });
             }
         } else if (command === "delay") {
             const ms = params.ms || 1000;
