@@ -787,11 +787,14 @@ class BridgeFlowClient(FlowClient):
 
 
     async def upload_image(self, image_path: str | Path) -> str:
-        """Upload or resolve local reference image for Flow UI Worker / Flow session."""
+        """Upload image to Google Flow via batchexecute maseQ RPC and return media_id."""
         p = Path(image_path).resolve()
         if not p.exists():
             raise FileNotFoundError(f"Image not found: {image_path}")
-        return str(p)
+        media_id = await self._upload_image_raw(p)
+        if not media_id:
+            raise ValueError(f"Failed to upload reference image: {p.name}")
+        return media_id
 
     async def _upload_image_raw(self, path: "Path") -> Optional[str]:
         """Upload image to Flow via batchexecute RPC `maseQ`.
@@ -900,46 +903,18 @@ class BridgeFlowClient(FlowClient):
 
         await self.ensure_project_id()
 
-        # Filter local file paths for FlowUIWorker
-        actual_refs = []
+        # Resolve local reference image paths via maseQ RPC directly (Zero DOM)
+        resolved_refs = []
         for p in (reference_images or []):
-            if p and Path(p).exists():
-                actual_refs.append(str(Path(p).resolve()))
-
-        last_ui_err = None
-        for ui_try in range(3):
-            try:
-                from .flow_ui_worker import ui_worker
-                log.info(f"[{self._account_email}] Generating image via Native Flow UI Worker (attempt {ui_try + 1}/3)...")
-                ui_res = await ui_worker.generate_image(
-                    prompt=prompt,
-                    aspect_ratio=aspect_ratio,
-                    model_key=model_key,
-                    reference_images=actual_refs or None,
-                    project_id=self.project_id or "d9ec99ab-368b-49e4-b641-e74719742745",
-                    email=self._account_email,
-                    timeout_s=60,
-                )
-                if ui_res and ui_res.get("media_id"):
-                    self._record_success()
-                    return {
-                        "media_id": ui_res["media_id"],
-                        "download_url": ui_res["download_url"],
-                        "seed": seed,
-                        "width": ui_res.get("width") or 1376,
-                        "height": ui_res.get("height") or 768,
-                        "_raw_bytes": ui_res.get("raw_bytes"),
-                    }
-            except Exception as ui_err:
-                last_ui_err = ui_err
-                log.warning(f"[{self._account_email}] Native Flow UI Worker image attempt {ui_try + 1} failed: {ui_err}")
-                if ui_try < 2:
-                    await asyncio.sleep(2.0)
-
-        # Do NOT fall back to BOQ batchexecute (ogiZ0b) when UI worker fails.
-        # Direct non-browser RPCs are flagged by Google with PUBLIC_ERROR_UNUSUAL_ACTIVITY
-        # and fallback dispatch causes duplicate generations in the project.
-        raise RuntimeError(f"Tạo ảnh thất bại trên Flow UI Worker: {last_ui_err}")
+            if p and Path(str(p)).exists():
+                try:
+                    ref_id = await self.upload_image(p)
+                    resolved_refs.append(ref_id)
+                except Exception as up_err:
+                    log.warning(f"[{self._account_email}] Failed to upload ref image {p}: {up_err}")
+            elif p:
+                resolved_refs.append(str(p))
+        reference_images = resolved_refs
 
         model_name = self.BOQ_IMAGE_MODEL_MAP.get(model_key, "GEM_PIX_2")
         ar_code = self.BOQ_ASPECT_RATIO_MAP.get(aspect_ratio, 3)
@@ -1271,48 +1246,35 @@ class BridgeFlowClient(FlowClient):
         import uuid as _uuid
         await self.ensure_project_id()
 
-        # 1. Primary path: Native Flow UI Worker (100% human score, eliminates PUBLIC_ERROR_UNUSUAL_ACTIVITY)
-        last_ui_err = None
-        for ui_try in range(3):
+        # 1. Resolve reference image and end image to media_id via maseQ RPC (Zero DOM)
+        actual_ref = ref_image_path if (ref_image_path and Path(str(ref_image_path)).exists()) else (
+            reference_image if (reference_image and Path(str(reference_image)).exists()) else reference_image
+        )
+        if actual_ref and Path(str(actual_ref)).exists():
             try:
-                from .flow_ui_worker import ui_worker
-                log.info(f"[{self._account_email}] Generating video via Native Flow UI Worker (attempt {ui_try + 1}/3)...")
-                # Use ref_image_path if provided, or reference_image if it's a valid local file
-                actual_ref = ref_image_path if (ref_image_path and Path(ref_image_path).exists()) else (
-                    reference_image if (reference_image and Path(reference_image).exists()) else None
-                )
-                actual_end = end_image if (end_image and Path(str(end_image)).exists()) else None
-                ui_res = await ui_worker.generate_video(
-                    prompt=prompt,
-                    aspect_ratio=aspect_ratio,
-                    duration=duration,
-                    model_key=model_key,
-                    reference_image=actual_ref,
-                    end_image=actual_end,
-                    video_mode=video_mode,
-                    project_id=self.project_id or "d9ec99ab-368b-49e4-b641-e74719742745",
-                    email=self._account_email,
-                    timeout_s=90,
-                )
-                if ui_res and ui_res.get("generation_id"):
-                    self._record_success()
-                    return ui_res["generation_id"]
-            except Exception as ui_err:
-                last_ui_err = ui_err
-                log.warning(f"[{self._account_email}] Native Flow UI Worker video attempt {ui_try + 1} failed: {ui_err}")
-                if ui_try < 2:
-                    await asyncio.sleep(2.0)
+                log.info(f"[{self._account_email}] Uploading start frame image {actual_ref} via maseQ RPC...")
+                actual_ref = await self.upload_image(actual_ref)
+            except Exception as up_err:
+                log.warning(f"[{self._account_email}] Failed to upload start frame {actual_ref}: {up_err}")
 
-        # Do NOT dual-dispatch to BOQ batchexecute (eb1hJf / YhhmEf) when UI worker fails.
-        # Direct non-browser RPCs trigger Google's PUBLIC_ERROR_UNUSUAL_ACTIVITY and
-        # dual-dispatch causes duplicate generation requests.
-        raise RuntimeError(f"Tạo video thất bại trên Flow UI Worker: {last_ui_err}")
+        actual_end = end_image
+        if actual_end and Path(str(actual_end)).exists():
+            try:
+                log.info(f"[{self._account_email}] Uploading end frame image {actual_end} via maseQ RPC...")
+                actual_end = await self.upload_image(actual_end)
+            except Exception as up_err:
+                log.warning(f"[{self._account_email}] Failed to upload end frame {actual_end}: {up_err}")
+
+        reference_image = actual_ref
 
         # Map aspect ratio: 2 = 16:9 (LANDSCAPE), 1 = 9:16 (PORTRAIT)
         ar_code = 1 if ("9:16" in str(aspect_ratio) or "PORTRAIT" in str(aspect_ratio).upper()) else 2
 
         # Map model name and RPC ID
-        if reference_image:
+        if reference_image and actual_end:
+            model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, "veo_3_1_i2v_lite")
+            rpc_id = "anprQif"
+        elif reference_image:
             if model_key and "i2v" in model_key:
                 model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, model_key)
             elif model_key and "fast" in model_key:
@@ -1327,7 +1289,7 @@ class BridgeFlowClient(FlowClient):
         source_path = f"/project/{self.project_id}"
         log.info(
             f"[{self._account_email}] (BOQ) Generating video ({rpc_id}): model={model_name}, "
-            f"has_ref={bool(reference_image)}, project={self.project_id}"
+            f"has_ref={bool(reference_image)}, has_end={bool(actual_end)}, project={self.project_id}"
         )
 
         for attempt in range(3):
@@ -1349,8 +1311,17 @@ class BridgeFlowClient(FlowClient):
             uuid_a = str(_uuid.uuid4()).upper()
             uuid_b = str(_uuid.uuid4()).upper()
 
-            if reference_image:
-                # I2V: 6-item candidate with ref_config at index 4
+            if reference_image and actual_end:
+                ref_config = [None, reference_image, None, None, actual_end, [None, None, 1, 1]]
+                candidate = [
+                    prompt_item,
+                    model_name,
+                    ar_code,
+                    None,
+                    ref_config,
+                    [None, None, None, None, uuid_a, uuid_b],
+                ]
+            elif reference_image:
                 ref_config = [None, reference_image, None, None, None, [None, None, 1, 1]]
                 candidate = [
                     prompt_item,
@@ -1434,11 +1405,7 @@ class BridgeFlowClient(FlowClient):
             )
             rpc_result = r.get("rpc_result")
             if not rpc_result or not isinstance(rpc_result, list) or len(rpc_result) < 3:
-                try:
-                    from .flow_ui_worker import ui_worker
-                    return await ui_worker.poll_video_status(generation_id)
-                except Exception:
-                    return {"state": "RUNNING"}
+                return {"state": "RUNNING"}
 
             items = rpc_result[2]
             if not items or not isinstance(items, list):
@@ -1473,11 +1440,7 @@ class BridgeFlowClient(FlowClient):
             return {"state": "RUNNING"}
         except Exception as e:
             log.warning(f"(BOQ) poll_status error for {generation_id}: {e}")
-            try:
-                from .flow_ui_worker import ui_worker
-                return await ui_worker.poll_video_status(generation_id)
-            except Exception:
-                return {"state": "RUNNING"}
+            return {"state": "RUNNING"}
 
     # ── Binary downloads ───────────────────────────────────────────
 
@@ -1527,23 +1490,12 @@ class BridgeFlowClient(FlowClient):
         return None
 
     async def _fetch_mp4_via_browser(self, media_id: str) -> Optional[bytes]:
-        """Fetch generated video bytes via browser.
+        """Fetch generated video bytes via signed URL and proxy fetch (Zero DOM).
 
-        1. UI worker download inside active Chrome session (direct & reliable)
-        2. Query signed CDN video URL via as29s RPC and fetch via bridge proxy_fetch_binary
-        3. Fallback to labs.google trpc redirect if as29s doesn't give a video URL
+        1. Query signed CDN video URL via as29s RPC and fetch via bridge proxy_fetch_binary
+        2. Fallback to labs.google trpc redirect if as29s doesn't give a video URL
         """
-        # Method 1: UI worker download inside active Chrome session
-        try:
-            from .flow_ui_worker import ui_worker
-            mp4_bytes = await ui_worker.fetch_video_mp4(media_id, project_id=self.project_id)
-            if mp4_bytes and len(mp4_bytes) > 100_000 and not mp4_bytes.startswith(b"\xff\xd8\xff"):
-                log.info(f"(bridge) _fetch_mp4_via_browser OK via UI worker: {len(mp4_bytes)} bytes (MP4)")
-                return mp4_bytes
-        except Exception as ui_err:
-            log.warning(f"(bridge) ui_worker fetch_video_mp4 error: {ui_err}")
-
-        # Method 2: get signed /video/ URL via as29s + extension proxy
+        # Method 1: get signed /video/ URL via as29s + extension proxy
         download_url = await self.get_download_url(media_id, for_video=True)
         if download_url:
             try:
