@@ -337,7 +337,7 @@ T2V_MODEL_MAP = {
     "lite":       "veo_3_1_t2v_lite",
     "fast":       "veo_3_1_t2v_fast",
     "quality":    "veo_3_1_t2v_quality",
-    "lite_lp":    "veo_3_1_t2v_lite",
+    "lite_lp":    "veo_3_1_t2v_lite_low_priority",
 }
 
 I2V_MODEL_MAP = {
@@ -345,7 +345,7 @@ I2V_MODEL_MAP = {
     "lite":       "veo_3_1_i2v_lite",
     "fast":       "veo_3_1_i2v_fast",
     "quality":    "veo_3_1_i2v_quality",
-    "lite_lp":    "veo_3_1_i2v_lite",
+    "lite_lp":    "veo_3_1_i2v_lite_low_priority",
 }
 
 # Extend video model keys
@@ -354,7 +354,7 @@ EXTEND_MODEL_MAP = {
     "lite":       "veo_3_1_t2v_lite",
     "fast":       "veo_3_1_t2v_fast",
     "quality":    "veo_3_1_t2v_quality",
-    "lite_lp":    "veo_3_1_t2v_lite",
+    "lite_lp":    "veo_3_1_t2v_lite_low_priority",
 }
 
 # Interpolation (first-frame + last-frame -> video) model keys.
@@ -363,7 +363,7 @@ INTERPOLATION_MODEL_MAP = {
     "lite":       "veo_3_1_i2v_lite",
     "fast":       "veo_3_1_i2v_fast",
     "quality":    "veo_3_1_i2v_quality",
-    "lite_lp":    "veo_3_1_i2v_lite",
+    "lite_lp":    "veo_3_1_i2v_lite_low_priority",
 }
 
 
@@ -374,6 +374,8 @@ def interpolation_model_for(quality: str) -> str:
 # Allowed duration options (seconds) per model preset.
 VIDEO_DURATIONS_BY_MODEL = {
     "omni_flash": [4, 6, 8, 10],
+    "lite":       [4, 6, 8],
+    "lite_lp":    [4, 6, 8],
     "fast":       [4, 6, 8],
     "quality":    [8],
 }

@@ -1210,9 +1210,9 @@ class BridgeFlowClient(FlowClient):
 
     BOQ_VIDEO_MODEL_MAP = {
         "veo_3_generate_video_fast": "veo_3_1_t2v_fast",
-        "veo_3_generate_video_lite_lp": "veo_3_1_t2v_lite",
-        "veo_3_1_t2v_lite_low_priority": "veo_3_1_t2v_lite",
-        "veo_3_1_i2v_lite_low_priority": "veo_3_1_i2v_lite",
+        "veo_3_generate_video_lite_lp": "veo_3_1_t2v_lite_low_priority",
+        "veo_3_1_t2v_lite_low_priority": "veo_3_1_t2v_lite_low_priority",
+        "veo_3_1_i2v_lite_low_priority": "veo_3_1_i2v_lite_low_priority",
         "veo_3_1_t2v_fast_ultra": "veo_3_1_t2v_fast",
         "veo_3_1_t2v_lite": "veo_3_1_t2v_lite",
         "veo_3_1_t2v_fast": "veo_3_1_t2v_fast",
@@ -1224,6 +1224,7 @@ class BridgeFlowClient(FlowClient):
         "veo_3_1_quality": "veo_3_1_t2v_quality",
         "omni_flash": "omni_flash",
         "lite": "veo_3_1_t2v_lite",
+        "lite_lp": "veo_3_1_t2v_lite_low_priority",
         "fast": "veo_3_1_t2v_fast",
         "quality": "veo_3_1_t2v_quality",
     }
@@ -1274,10 +1275,15 @@ class BridgeFlowClient(FlowClient):
 
         # Map model name and RPC ID
         if reference_image and actual_end:
-            model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, "veo_3_1_i2v_lite")
+            if model_key in ("lite_lp", "veo_3_1_i2v_lite_low_priority"):
+                model_name = "veo_3_1_i2v_lite_low_priority"
+            else:
+                model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, "veo_3_1_i2v_lite")
             rpc_id = "anprQif"
         elif reference_image:
-            if model_key and "i2v" in model_key:
+            if model_key in ("lite_lp", "veo_3_1_i2v_lite_low_priority"):
+                model_name = "veo_3_1_i2v_lite_low_priority"
+            elif model_key and "i2v" in model_key:
                 model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, model_key)
             elif model_key and "fast" in model_key:
                 model_name = "veo_3_1_i2v_fast"
@@ -1285,7 +1291,10 @@ class BridgeFlowClient(FlowClient):
                 model_name = "veo_3_1_i2v_lite"
             rpc_id = "eb1hJf"
         else:
-            model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, model_key or "veo_3_1_t2v_lite")
+            if model_key in ("lite_lp", "veo_3_1_t2v_lite_low_priority"):
+                model_name = "veo_3_1_t2v_lite_low_priority"
+            else:
+                model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, model_key or "veo_3_1_t2v_lite")
             rpc_id = "YhhmEf"
 
         source_path = f"/project/{self.project_id}"

@@ -38,22 +38,24 @@ const _favByGroup = new Map();
 // Duration options per model.
 const DURATION_BY_MODEL = {
   omni_flash: [4, 6, 8, 10],
+  lite_lp:    [4, 6, 8],
   lite:       [4, 6, 8],
   fast:       [4, 6, 8],
   quality:    [8],
 };
 
-// 4 active video models from Google Flow
+// Active video models from Google Flow
 const MODELS_FOR_MODE = {
-  t2v: ['omni_flash', 'lite', 'fast', 'quality'],
-  i2v: ['omni_flash', 'lite', 'fast', 'quality'],
+  t2v: ['lite_lp', 'lite', 'fast', 'quality', 'omni_flash'],
+  i2v: ['lite_lp', 'lite', 'fast', 'quality', 'omni_flash'],
 };
 // Labels for video models dropdown
 const MODEL_LABELS = {
-  omni_flash: 'Omni 1.1 Flash',
+  lite_lp:    'Veo 3.1 Lite (Lower Priority · Miễn phí)',
   lite:       'Veo 3.1 – Lite',
   fast:       'Veo 3.1 – Fast',
   quality:    'Veo 3.1 – Quality',
+  omni_flash: 'Omni 1.1 Flash',
 };
 
 function defaultTaskName(prefix = 'video') {
@@ -346,8 +348,17 @@ export function renderContent(root) {
     // fallback sang lite_lp (miễn phí, an toàn nhất)
     form.quality = allowed.includes(prev) ? prev : 'lite_lp';
     sel.value = form.quality;
-    if (help) {
-      help.textContent = 'Omni Flash hỗ trợ 4/6/8/10s, các model Veo 3.1 cố định 8s';
+    updateQualityHelp();
+  }
+  function updateQualityHelp() {
+    const help = root.querySelector('#cnt-quality-help');
+    if (!help) return;
+    if (form.quality === 'lite_lp') {
+      help.textContent = 'Veo 3.1 Lite LP: Hàng đợi ưu tiên thấp, miễn phí hoàn toàn (không trừ credit Google Flow).';
+    } else if (form.quality === 'omni_flash') {
+      help.textContent = 'Omni Flash hỗ trợ 4/6/8/10s, tốc độ nhanh.';
+    } else {
+      help.textContent = 'Veo 3.1 (Lite / Fast / Quality) tạo video chất lượng cao.';
     }
   }
   refreshModelDropdown();
@@ -374,6 +385,7 @@ export function renderContent(root) {
   refreshDurationDropdown();
   root.querySelector('#cnt-quality').addEventListener('change', (e) => {
     form.quality = e.target.value;
+    updateQualityHelp();
     refreshDurationDropdown();
   });
   root.querySelector('#cnt-duration').addEventListener('change', (e) => {
