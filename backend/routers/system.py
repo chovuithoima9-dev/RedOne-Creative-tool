@@ -89,9 +89,8 @@ async def test_debug_dom():
 @router.get("/test-recaptcha")
 async def test_recaptcha(action: str = "IMAGE_GENERATION"):
     """Test harvesting reCAPTCHA token from active tab."""
-    from ..services.browser_bridge import bridge
-    site_key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
-    token = await bridge.harvest_recaptcha(site_key=site_key, action=action)
+    from ..services.flow.captcha_worker import captcha_provider
+    token = await captcha_provider.get_token(action=action)
     return {
         "action": action,
         "token_len": len(token) if token else 0,

@@ -70,13 +70,44 @@ def find_chrome_executable() -> Optional[str]:
     return shutil.which("chrome") or shutil.which("google-chrome")
 
 
+def format_cookies_for_playwright(raw_cookies: list[dict]) -> list[dict]:
+    """Convert Chrome extension cookie dicts to Playwright-compatible format."""
+    pw_cookies = []
+    for c in raw_cookies:
+        name = c.get("name")
+        val = c.get("value")
+        dom = c.get("domain")
+        if not name or not dom:
+            continue
+        item = {
+            "name": name,
+            "value": val or "",
+            "domain": dom,
+            "path": c.get("path") or "/",
+        }
+        if c.get("expirationDate"):
+            item["expires"] = float(c["expirationDate"])
+        if c.get("httpOnly") is not None:
+            item["httpOnly"] = bool(c["httpOnly"])
+        if c.get("secure") is not None:
+            item["secure"] = bool(c["secure"])
+        ss = (c.get("sameSite") or "").lower()
+        if ss in ["strict", "lax", "no_restriction"]:
+            map_ss = {"strict": "Strict", "lax": "Lax", "no_restriction": "None"}
+            item["sameSite"] = map_ss.get(ss, "Lax")
+        pw_cookies.append(item)
+    return pw_cookies
+
+
 def resolve_profile_dir(email: str = "") -> Path:
-    """Find the Chrome profile directory containing Google Flow cookies/session.
+    """Find or create the Chrome profile directory for Google Flow session.
 
     Checks:
-    1. G-Labs Studio profile directory: %APPDATA%/G-Labs Studio/flow_profiles/<email>
-    2. RedOne profile directory: DATA_DIR/flow_profiles/<email>
-    3. Any existing profile in G-Labs Studio flow_profiles
+    1. Exact match in G-Labs Studio profile directory: %APPDATA%/G-Labs Studio/flow_profiles/<email>
+    2. Exact match in RedOne profile directory: DATA_DIR/flow_profiles/<email>
+    3. If email is provided, create and return DATA_DIR/flow_profiles/<email>.
+       NEVER fall back to a different email account if a specific email was requested.
+    4. If email is empty, pick first available profile or default.
     """
     glabs_profiles_root = Path(os.path.expandvars(r"%APPDATA%\G-Labs Studio\flow_profiles"))
     redone_profiles_root = DATA_DIR / "flow_profiles"
@@ -92,16 +123,25 @@ def resolve_profile_dir(email: str = "") -> Path:
         p2 = redone_profiles_root / clean_email
         if p2.is_dir():
             return p2
+        # Create dedicated profile for this requested email
+        target = redone_profiles_root / clean_email
+        target.mkdir(parents=True, exist_ok=True)
+        return target
 
-    # Fallback: check if any profile exists in G-Labs Studio
+    # ONLY when email is NOT specified: check existing profiles
+    if redone_profiles_root.is_dir():
+        for sub in redone_profiles_root.iterdir():
+            if sub.is_dir() and "@" in sub.name:
+                return sub
+
     if glabs_profiles_root.is_dir():
         for sub in glabs_profiles_root.iterdir():
             if sub.is_dir() and "@" in sub.name:
                 log.info(f"Using G-Labs profile for UI generation: {sub.name}")
                 return sub
 
-    # Fallback to RedOne data dir
-    target = redone_profiles_root / (clean_email or "default")
+    # Fallback to RedOne data dir default
+    target = redone_profiles_root / "default"
     target.mkdir(parents=True, exist_ok=True)
     return target
 
@@ -281,6 +321,7 @@ class FlowUIWorker:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._active_email: str = ""
+        self._active_profile_path: Optional[Path] = None
         self._active_project_id: str = ""
         self._input_lock = asyncio.Lock()
         self._pending_prompts: dict[str, asyncio.Future] = {}
@@ -828,26 +869,133 @@ class FlowUIWorker:
 
         return True
 
+    async def _ensure_editor_ready(self, page: Page, requested_pid: str) -> str:
+        """Navigate to requested_pid and ensure .ProseMirror is visible.
+        If requested_pid results in 404 or fails to show .ProseMirror within 5 seconds,
+        auto-recovers by discovering a valid project from Flow home or creating a new one.
+        Returns the confirmed active project ID.
+        """
+        target_url = f"https://flow.google.com/project/{requested_pid}" if requested_pid else "https://flow.google.com/"
+        current_url = page.url or ""
+
+        # If already on the project URL and editor is visible, nothing to do
+        if requested_pid and current_url.startswith(target_url) and "/404" not in current_url:
+            try:
+                pm = await page.query_selector(".ProseMirror")
+                if pm and await pm.is_visible():
+                    self._active_project_id = requested_pid
+                    return requested_pid
+            except Exception:
+                pass
+
+        log.info(f"[FlowUIWorker] Navigating to {target_url}...")
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=35000)
+        except Exception as e:
+            log.warning(f"[FlowUIWorker] Navigation to {target_url} raised: {e}")
+
+        # Check if redirected to Google sign-in (session missing or expired)
+        if "accounts.google.com" in (page.url or ""):
+            log.warning("[FlowUIWorker] Redirected to accounts.google.com. Auto-syncing cookies from Chrome extension...")
+            try:
+                from .browser_bridge import bridge
+                if bridge.is_extension_live():
+                    res = await bridge.get_cookies(domains=["flow.google.com", ".flow.google.com", ".google.com", "google.com"])
+                    if res and isinstance(res, dict) and "cookies" in res:
+                        pw_cookies = format_cookies_for_playwright(res["cookies"])
+                        if pw_cookies:
+                            await page.context.add_cookies(pw_cookies)
+                            log.info(f"[FlowUIWorker] Re-synced {len(pw_cookies)} cookies. Retrying navigation to {target_url}...")
+                            await page.goto(target_url, wait_until="domcontentloaded", timeout=35000)
+            except Exception as e:
+                log.warning(f"[FlowUIWorker] Re-syncing cookies failed: {e}")
+
+        # Check if ProseMirror appears within 5 seconds; if not or if redirected to 404, auto-recover
+        has_pm = False
+        for _ in range(5):
+            await page.wait_for_timeout(1000)
+            if "/404" in (page.url or "") or "accounts.google.com" in (page.url or ""):
+                break
+            try:
+                pm = await page.query_selector(".ProseMirror")
+                if pm and await pm.is_visible():
+                    has_pm = True
+                    break
+            except Exception:
+                pass
+
+        if not requested_pid or not has_pm or "/404" in (page.url or ""):
+            log.warning(
+                f"[FlowUIWorker] Project '{requested_pid}' invalid or inaccessible (url={page.url}). "
+                f"Auto-discovering valid project from Flow home..."
+            )
+            try:
+                await page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=25000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(3000)
+
+            # 1. Search for existing project links on Flow home
+            first_project_link = None
+            try:
+                first_project_link = await page.evaluate("""() => {
+                    const links = Array.from(document.querySelectorAll('a[href*="/project/"]'));
+                    for (const a of links) {
+                        if (a.href && !a.href.includes('/404')) return a.href;
+                    }
+                    return null;
+                }""")
+            except Exception:
+                pass
+
+            if first_project_link:
+                log.info(f"[FlowUIWorker] Auto-navigating to existing valid project: {first_project_link}")
+                await page.goto(first_project_link, wait_until="domcontentloaded", timeout=35000)
+                m = first_project_link.split("/project/")
+                if len(m) > 1:
+                    self._active_project_id = m[1].split("?")[0].split("/")[0]
+            else:
+                # 2. If no project links found, try clicking 'New project'
+                log.info("[FlowUIWorker] No existing project links found on Flow home. Creating new project...")
+                new_btn = page.locator("button:has-text('New project'), button:has-text('Dự án mới'), [aria-label*='New project'], [aria-label*='Dự án mới'], span:has-text('New project')").first
+                try:
+                    await new_btn.wait_for(state="visible", timeout=6000)
+                    await new_btn.click()
+                    await page.wait_for_timeout(4000)
+                    m = (page.url or "").split("/project/")
+                    if len(m) > 1:
+                        self._active_project_id = m[1].split("?")[0].split("/")[0]
+                except Exception as btn_err:
+                    log.warning(f"[FlowUIWorker] Clicking 'New project' failed: {btn_err}")
+
+        # Wait for ProseMirror to be visible
+        await page.wait_for_selector(".ProseMirror", state="visible", timeout=25000)
+        if "/project/" in (page.url or "") and "/404" not in page.url:
+            parts = page.url.split("/project/")
+            if len(parts) > 1:
+                self._active_project_id = parts[1].split("?")[0].split("/")[0]
+
+        return self._active_project_id
+
     async def ensure_session(self, email: str = "", project_id: str = "") -> Page:
         """Ensure Chrome is running, authenticated, and navigated to the project page."""
         self._reset_idle_timer()
 
-        pid = project_id or self._active_project_id or "d9ec99ab-368b-49e4-b641-e74719742745"
+        pid = (project_id or self._active_project_id or "").strip()
         profile_path = resolve_profile_dir(email)
         chrome_exe = find_chrome_executable()
 
         if not chrome_exe:
             raise RuntimeError("Google Chrome not found on system. Please install Google Chrome.")
 
-        # If context is alive and profile matches
+        # If context is alive
         if self._context and self._page and not self._page.is_closed():
-            target_url_prefix = f"https://flow.google.com/project/{pid}"
-            if not self._page.url.startswith(target_url_prefix):
-                log.info(f"[FlowUIWorker] Navigating to project {pid}...")
-                await self._page.goto(target_url_prefix, wait_until="domcontentloaded", timeout=35000)
-                await self._page.wait_for_selector(".ProseMirror", state="visible", timeout=25000)
-            self._active_project_id = pid
-            return self._page
+            if self._active_profile_path and self._active_profile_path != profile_path:
+                log.info(f"[FlowUIWorker] Profile changed ({self._active_profile_path} -> {profile_path}). Reopening...")
+                await self.close()
+            else:
+                await self._ensure_editor_ready(self._page, pid)
+                return self._page
 
         # Launch fresh persistent context
         log.info(f"[FlowUIWorker] Launching persistent Chrome context with profile: {profile_path}")
@@ -866,43 +1014,28 @@ class FlowUIWorker:
         )
         self._context.on("response", self._on_response)
 
+        # Auto-sync live cookies from Chrome Extension if available
+        try:
+            from .browser_bridge import bridge
+            if bridge.is_extension_live():
+                ext_email = (bridge.get_active_account_email() or "").strip().lower()
+                clean_email = (email or "").strip().lower()
+                if not clean_email or clean_email == ext_email or not ext_email:
+                    res = await bridge.get_cookies(domains=["flow.google.com", ".flow.google.com", ".google.com", "google.com"])
+                    if res and isinstance(res, dict) and "cookies" in res:
+                        pw_cookies = format_cookies_for_playwright(res["cookies"])
+                        if pw_cookies:
+                            await self._context.add_cookies(pw_cookies)
+                            log.info(f"[FlowUIWorker] Synced {len(pw_cookies)} cookies from Chrome extension into profile {profile_path.name}")
+        except Exception as e:
+            log.debug(f"[FlowUIWorker] Auto cookie sync from extension skipped: {e}")
+
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         self._active_email = email
+        self._active_profile_path = profile_path
         self._active_project_id = pid
 
-        target_url = f"https://flow.google.com/project/{pid}"
-        log.info(f"[FlowUIWorker] Navigating to {target_url}...")
-        await self._page.goto(target_url, wait_until="domcontentloaded", timeout=35000)
-
-        # Check if ProseMirror appears within 6 seconds; if not or if redirected to 404, auto-recover
-        has_pm = False
-        for _ in range(6):
-            await self._page.wait_for_timeout(1000)
-            if "/404" in self._page.url:
-                break
-            if await self._page.query_selector(".ProseMirror"):
-                has_pm = True
-                break
-
-        if not has_pm or "/404" in self._page.url:
-            log.warning(
-                f"[FlowUIWorker] Project {pid} invalid (url={self._page.url}). "
-                f"Auto-discovering valid project from Flow home..."
-            )
-            await self._page.goto("https://flow.google.com/", wait_until="domcontentloaded", timeout=25000)
-            await self._page.wait_for_timeout(3000)
-            first_project_link = await self._page.evaluate("""() => {
-                const a = document.querySelector('a[href*="/project/"]');
-                return a ? a.href : null;
-            }""")
-            if first_project_link:
-                log.info(f"[FlowUIWorker] Auto-navigating to existing valid project: {first_project_link}")
-                await self._page.goto(first_project_link, wait_until="domcontentloaded", timeout=35000)
-                m = first_project_link.split("/project/")
-                if len(m) > 1:
-                    self._active_project_id = m[1].split("?")[0].split("/")[0]
-
-        await self._page.wait_for_selector(".ProseMirror", state="visible", timeout=25000)
+        await self._ensure_editor_ready(self._page, pid)
         return self._page
 
     async def generate_image(
@@ -964,15 +1097,36 @@ class FlowUIWorker:
             await page.wait_for_timeout(300)
 
             # Ensure .generate-icon-button is enabled (not disabled)
+            # Ensure .generate-icon-button is enabled (not disabled)
             log.info("[FlowUIWorker] Submitting image prompt...")
+            button_ready = False
             for _ in range(25):  # wait up to 5s for button readiness
                 is_disabled = await page.evaluate("""() => {
                     const b = document.querySelector('.generate-icon-button');
                     return !b || b.disabled || b.classList.contains('mat-mdc-button-disabled');
                 }""")
                 if not is_disabled:
+                    button_ready = True
                     break
                 await page.wait_for_timeout(200)
+
+            if not button_ready:
+                err_diag = await page.evaluate("""() => {
+                    const b = document.querySelector('.generate-icon-button');
+                    const pm = document.querySelector('.ProseMirror');
+                    const modal = document.querySelector('mat-dialog-container, .cdk-overlay-pane');
+                    return {
+                        hasButton: !!b,
+                        buttonDisabled: b ? (b.disabled || b.classList.contains('mat-mdc-button-disabled')) : null,
+                        pmText: pm ? pm.innerText.slice(0, 100) : '',
+                        hasModal: !!modal,
+                        modalText: modal ? modal.innerText.slice(0, 100) : ''
+                    };
+                }""")
+                self._pending_prompts.pop(norm_prompt, None)
+                if fut in self._pending_queue:
+                    self._pending_queue.remove(fut)
+                raise RuntimeError(f"Nút Generate bị vô hiệu hóa (disabled). Chi tiết trang: {err_diag}")
 
             # Trigger generate via a single native DOM click to eliminate duplicate triggers
             clicked = await page.evaluate("""() => {
@@ -1143,14 +1297,33 @@ class FlowUIWorker:
 
             # Ensure .generate-icon-button is enabled (not disabled)
             log.info("[FlowUIWorker] Submitting video prompt...")
+            button_ready = False
             for _ in range(25):  # wait up to 5s for button readiness
                 is_disabled = await page.evaluate("""() => {
                     const b = document.querySelector('.generate-icon-button');
                     return !b || b.disabled || b.classList.contains('mat-mdc-button-disabled');
                 }""")
                 if not is_disabled:
+                    button_ready = True
                     break
                 await page.wait_for_timeout(200)
+
+            if not button_ready:
+                err_diag = await page.evaluate("""() => {
+                    const b = document.querySelector('.generate-icon-button');
+                    const pm = document.querySelector('.ProseMirror');
+                    const modal = document.querySelector('mat-dialog-container, .cdk-overlay-pane');
+                    return {
+                        hasButton: !!b,
+                        buttonDisabled: b ? (b.disabled || b.classList.contains('mat-mdc-button-disabled')) : null,
+                        pmText: pm ? pm.innerText.slice(0, 100) : '',
+                        hasModal: !!modal,
+                        modalText: modal ? modal.innerText.slice(0, 100) : ''
+                    };
+                }""")
+                if fut in self._pending_video_queue:
+                    self._pending_video_queue.remove(fut)
+                raise RuntimeError(f"Nút Generate video bị vô hiệu hóa (disabled). Chi tiết trang: {err_diag}")
 
             # Trigger generate via a single native DOM click to eliminate duplicate triggers
             clicked = await page.evaluate("""() => {
@@ -1343,6 +1516,9 @@ class FlowUIWorker:
             finally:
                 self._context = None
                 self._page = None
+                self._active_profile_path = None
+                self._active_email = ""
+                self._active_project_id = ""
 
             try:
                 if self._pw:

@@ -207,12 +207,9 @@ class BridgeFlowClient(FlowClient):
         if recaptcha_action or has_recaptcha_placeholder:
             action = recaptcha_action or "IMAGE_GENERATION"
             try:
-                log.info(f"[{self._account_email}] Harvesting reCAPTCHA token via Chrome tab (action={action})...")
-                rc_res = await bridge.harvest_recaptcha(
-                    site_key="6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV",
-                    action=action,
-                )
-                rc_token = rc_res.get("token") if isinstance(rc_res, dict) else str(rc_res)
+                log.info(f"[{self._account_email}] Harvesting reCAPTCHA token (action={action})...")
+                from .flow.captcha_worker import captcha_provider
+                rc_token = await captcha_provider.get_token(action=action)
                 if rc_token:
                     inner_str = json.dumps(inner_payload).replace('"__MINT_RECAPTCHA__"', json.dumps(rc_token))
                     if "__MINT_RECAPTCHA__" in inner_str:

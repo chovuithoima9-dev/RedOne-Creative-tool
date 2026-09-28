@@ -617,7 +617,21 @@ async function _doRecaptchaTask(task) {
             world: "MAIN",
             func: async (siteKeyArg, actionArg) => {
                 try {
-                    if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise) {
+                    let key = (siteKeyArg && !siteKeyArg.includes("@") && siteKeyArg.startsWith("6")) ? siteKeyArg : "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
+                    if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
+                        // G-Labs Studio parity: auto-inject recaptcha enterprise script if not present
+                        if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {
+                            const s = document.createElement("script");
+                            s.src = `https://www.google.com/recaptcha/enterprise.js?render=${key}`;
+                            s.async = true;
+                            (document.head || document.documentElement).appendChild(s);
+                        }
+                        const _dl = Date.now() + 10000;
+                        while (Date.now() < _dl && (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute)) {
+                            await new Promise(r => setTimeout(r, 250));
+                        }
+                    }
+                    if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
                         return { token: null, error: "grecaptcha.enterprise not loaded" };
                     }
                     let key = (siteKeyArg && !siteKeyArg.includes("@") && siteKeyArg.startsWith("6")) ? siteKeyArg : "";
@@ -891,9 +905,20 @@ async function _doBatchExecuteTask(task) {
                     // Google to flag as UNUSUAL_ACTIVITY (context mismatch).
                     let finalPayloadJson = innerPayloadJson;
                     if (recaptchaActionArg) {
-                        try {
                             const SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
-                            if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise) {
+                            if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
+                                if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {
+                                    const s = document.createElement("script");
+                                    s.src = `https://www.google.com/recaptcha/enterprise.js?render=${SITE_KEY}`;
+                                    s.async = true;
+                                    (document.head || document.documentElement).appendChild(s);
+                                }
+                                const _dl = Date.now() + 10000;
+                                while (Date.now() < _dl && (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute)) {
+                                    await new Promise(r => setTimeout(r, 250));
+                                }
+                            }
+                            if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
                                 return { status: 0, error: "grecaptcha.enterprise not loaded — cannot mint inline token" };
                             }
                             await new Promise(r => grecaptcha.enterprise.ready(r));

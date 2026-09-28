@@ -67,19 +67,36 @@ class FlowCaptchaProvider:
                     page = await context.new_page()
                     await page.goto("https://flow.google.com/about", timeout=15000, wait_until="domcontentloaded")
 
-                    # Wait for grecaptcha
+                    # Ensure grecaptcha script is injected if missing
                     js = f"""
                     new Promise((resolve, reject) => {{
-                        const timer = setTimeout(() => reject('timeout'), 10000);
-                        if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise) {{
-                            grecaptcha.enterprise.ready(() => {{
-                                grecaptcha.enterprise.execute('{self.site_key}', {{ action: '{action}' }})
-                                    .then((t) => {{ clearTimeout(timer); resolve(t); }})
-                                    .catch((err) => {{ clearTimeout(timer); reject(err); }});
-                            }});
+                        const timer = setTimeout(() => reject('timeout'), 15000);
+                        function runExecute() {{
+                            if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise) {{
+                                grecaptcha.enterprise.ready(() => {{
+                                    grecaptcha.enterprise.execute('{self.site_key}', {{ action: '{action}' }})
+                                        .then((t) => {{ clearTimeout(timer); resolve(t); }})
+                                        .catch((err) => {{ clearTimeout(timer); reject(err); }});
+                                }});
+                            }} else {{
+                                clearTimeout(timer);
+                                reject('grecaptcha not found');
+                            }}
+                        }}
+
+                        if (typeof grecaptcha === 'undefined' || !grecaptcha.enterprise) {{
+                            if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {{
+                                const s = document.createElement('script');
+                                s.src = 'https://www.google.com/recaptcha/enterprise.js?render={self.site_key}';
+                                s.async = true;
+                                s.onload = () => {{ setTimeout(runExecute, 500); }};
+                                s.onerror = () => {{ clearTimeout(timer); reject('failed to load script'); }};
+                                (document.head || document.documentElement).appendChild(s);
+                            }} else {{
+                                setTimeout(runExecute, 1000);
+                            }}
                         }} else {{
-                            clearTimeout(timer);
-                            reject('grecaptcha not found');
+                            runExecute();
                         }}
                     }})
                     """
