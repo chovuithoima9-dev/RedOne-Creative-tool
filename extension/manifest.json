@@ -30,6 +30,17 @@
         "https://flow.google.com/*"
       ],
       "js": [
+        "hijack_bypass.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://labs.google/*",
+        "https://flow.google.com/*"
+      ],
+      "js": [
         "content.js"
       ],
       "run_at": "document_idle"

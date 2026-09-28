@@ -703,18 +703,99 @@ async function _doRecaptchaTask(task) {
                         }
                     }
                     if (!key) key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
-                    await new Promise(resolve => grecaptcha.enterprise.ready(resolve));
-                    // 15s timeout: grecaptcha.execute can hang indefinitely
-                    // when reCAPTCHA is in a bad state. G-Labs uses the same
-                    // Promise.race pattern to prevent stuck tasks.
-                    const token = await Promise.race([
-                        grecaptcha.enterprise.execute(key, { action: actionArg }),
-                        new Promise((_, reject) => setTimeout(
-                            () => reject(new Error("grecaptcha execute timeout (15s)")),
-                            15000,
-                        )),
-                    ]);
-                    return { token, error: null, sitekey: key };
+                    const targetAction = actionArg || "IMAGE_GENERATION";
+
+                    // ── Strategy 1: Pristine execute (captured by hijack_bypass.js) ──
+                    const hijack = window.__redone_hijack || window.__fk_hijack;
+                    if (hijack && typeof hijack.pristine === "function") {
+                        try {
+                            const token = await Promise.race([
+                                hijack.pristine(key, { action: targetAction }),
+                                new Promise((_, reject) => setTimeout(
+                                    () => reject(new Error("pristine execute timeout (15s)")),
+                                    15000,
+                                )),
+                            ]);
+                            if (token) {
+                                console.log("[RedOne] Token minted via pristine execute (" + (hijack.source || "pristine") + "):", String(token).substring(0, 25) + "...");
+                                return { token: String(token), error: null, sitekey: key, bypass: "pristine" };
+                            }
+                        } catch (pErr) {
+                            console.warn("[RedOne] Pristine execute failed, falling back:", pErr);
+                        }
+                    }
+
+                    // ── Strategy 2: Object.assign neuter ──
+                    // Google Flow x2a trap overrides execute to force action: "extension_hijack_detected" via Object.assign.
+                    // We temporarily intercept Object.assign so that any action set to "extension_hijack_detected" is replaced with targetAction!
+                    const _realObjectAssign = Object.assign;
+                    try {
+                        Object.assign = function (target, ...sources) {
+                            for (const src of sources) {
+                                if (src && typeof src === "object" && src.action === "extension_hijack_detected") {
+                                    try { src.action = targetAction; } catch (_) {}
+                                }
+                            }
+                            const res = _realObjectAssign.apply(this, [target, ...sources]);
+                            if (res && typeof res === "object" && res.action === "extension_hijack_detected") {
+                                try { res.action = targetAction; } catch (_) {}
+                            }
+                            return res;
+                        };
+
+                        await new Promise(resolve => grecaptcha.enterprise.ready(resolve));
+                        const token = await Promise.race([
+                            grecaptcha.enterprise.execute(key, { action: targetAction }),
+                            new Promise((_, reject) => setTimeout(
+                                () => reject(new Error("grecaptcha execute timeout (15s)")),
+                                15000,
+                            )),
+                        ]);
+                        if (token) {
+                            console.log("[RedOne] Token minted via Object.assign neuter:", String(token).substring(0, 25) + "...");
+                            return { token: String(token), error: null, sitekey: key, bypass: "assign_neuter" };
+                        }
+                    } finally {
+                        Object.assign = _realObjectAssign;
+                    }
+
+                    // ── Strategy 3: Invisible hidden widget fallback ──
+                    try {
+                        let host = document.getElementById("redone-recaptcha-host");
+                        if (!host) {
+                            host = document.createElement("div");
+                            host.id = "redone-recaptcha-host";
+                            host.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;";
+                            document.documentElement.appendChild(host);
+                        }
+                        const widgetId = await new Promise((resolve, reject) => {
+                            try {
+                                const id = grecaptcha.enterprise.render(host, {
+                                    sitekey: key,
+                                    size: "invisible",
+                                    callback: () => {},
+                                    "error-callback": (m) => reject(new Error("render_error: " + m)),
+                                });
+                                resolve(id);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        });
+                        const token = await Promise.race([
+                            grecaptcha.enterprise.execute(widgetId, { action: targetAction }),
+                            new Promise((_, reject) => setTimeout(
+                                () => reject(new Error("widget execute timeout (15s)")),
+                                15000,
+                            )),
+                        ]);
+                        if (token) {
+                            return { token: String(token), error: null, sitekey: key, bypass: "widget" };
+                        }
+                    } catch (wErr) {
+                        console.warn("[RedOne] Widget fallback failed:", wErr);
+                    }
+
+                    return { token: null, error: "all minting strategies failed" };
                 } catch (err) {
                     return { token: null, error: err.message || String(err) };
                 }
@@ -946,15 +1027,52 @@ async function _doBatchExecuteTask(task) {
                             if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
                                 return { status: 0, error: "grecaptcha.enterprise not loaded — cannot mint inline token" };
                             }
-                            await new Promise(r => grecaptcha.enterprise.ready(r));
-                            const rcToken = await Promise.race([
-                                grecaptcha.enterprise.execute(SITE_KEY, { action: recaptchaActionArg }),
-                                new Promise((_, reject) => setTimeout(
-                                    () => reject(new Error("reCAPTCHA inline mint timeout (15s)")),
-                                    15000,
-                                )),
-                            ]);
-                            console.log("[RedOne BOQ] Inline reCAPTCHA minted:", rcToken.substring(0, 30) + "...");
+                            const targetAction = recaptchaActionArg || "IMAGE_GENERATION";
+                            let rcToken = null;
+
+                            // Strategy 1: Pristine
+                            const hijack = window.__redone_hijack || window.__fk_hijack;
+                            if (hijack && typeof hijack.pristine === "function") {
+                                try {
+                                    rcToken = await Promise.race([
+                                        hijack.pristine(SITE_KEY, { action: targetAction }),
+                                        new Promise((_, reject) => setTimeout(
+                                            () => reject(new Error("pristine timeout (15s)")),
+                                            15000,
+                                        )),
+                                    ]);
+                                } catch (_) {}
+                            }
+
+                            // Strategy 2: Assign neuter
+                            if (!rcToken) {
+                                const _realObjectAssign = Object.assign;
+                                try {
+                                    Object.assign = function (target, ...sources) {
+                                        for (const s of sources) {
+                                            if (s && typeof s === "object" && s.action === "extension_hijack_detected") {
+                                                try { s.action = targetAction; } catch (_) {}
+                                            }
+                                        }
+                                        const res = _realObjectAssign.apply(this, [target, ...sources]);
+                                        if (res && typeof res === "object" && res.action === "extension_hijack_detected") {
+                                            try { res.action = targetAction; } catch (_) {}
+                                        }
+                                        return res;
+                                    };
+                                    await new Promise(r => grecaptcha.enterprise.ready(r));
+                                    rcToken = await Promise.race([
+                                        grecaptcha.enterprise.execute(SITE_KEY, { action: targetAction }),
+                                        new Promise((_, reject) => setTimeout(
+                                            () => reject(new Error("reCAPTCHA inline mint timeout (15s)")),
+                                            15000,
+                                        )),
+                                    ]);
+                                } finally {
+                                    Object.assign = _realObjectAssign;
+                                }
+                            }
+                            console.log("[RedOne BOQ] Inline reCAPTCHA minted:", (rcToken || "").substring(0, 30) + "...");
                             // Replace placeholder with real token (keeps JSON valid)
                             finalPayloadJson = innerPayloadJson.replaceAll(
                                 '"__MINT_RECAPTCHA__"',
@@ -1167,6 +1285,13 @@ async function _executeSessionCommand(cmd) {
         if (command === "reload_extension") {
             console.log("[Extension] Reloading extension on command...");
             chrome.runtime.reload();
+            return;
+        } else if (command === "reload_tab") {
+            const tab = await _findLabsTab();
+            if (tab && tab.id) {
+                console.log("[Extension] Reloading labs/flow tab on command...");
+                chrome.tabs.reload(tab.id);
+            }
             return;
         } else if (command === "set_target_email") {
             _targetGoogleEmail = params.email || null;
