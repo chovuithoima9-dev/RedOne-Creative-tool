@@ -201,28 +201,31 @@ class BridgeFlowClient(FlowClient):
         - Administrative RPCs (jHPbke, nzlxg, UpteDb, jwpduf) do not require reCAPTCHA and run
           instantaneously (~200ms) in Python FlowSession without interrupting tab focus.
         """
-        # 1. For generation RPCs (ogiZ0b, eb1hJf, YhhmEf, SPrCad, maseQ) requiring reCAPTCHA:
-        # Harvest fresh token from tab and inject directly into inner_payload (G-Labs Studio architecture)
+        # 1. Primary path for generation RPCs: In-tab batch_execute
+        # Why: Google reCAPTCHA Enterprise enforces TLS fingerprint & origin binding.
+        # Executing the RPC inside the Chrome tab (via bridge.batch_execute) ensures the
+        # inline reCAPTCHA token, TLS session, and Origin header match 100%, completely
+        # eliminating PUBLIC_ERROR_UNUSUAL_ACTIVITY (Error 7).
         has_recaptcha_placeholder = isinstance(inner_payload, (list, dict, str)) and "__MINT_RECAPTCHA__" in json.dumps(inner_payload)
         if recaptcha_action or has_recaptcha_placeholder:
             action = recaptcha_action or "IMAGE_GENERATION"
             try:
-                log.info(f"[{self._account_email}] Harvesting reCAPTCHA token (action={action})...")
-                from .flow.captcha_worker import captcha_provider
-                rc_token = await captcha_provider.get_token(action=action)
-                if rc_token:
-                    inner_str = json.dumps(inner_payload).replace('"__MINT_RECAPTCHA__"', json.dumps(rc_token))
-                    if "__MINT_RECAPTCHA__" in inner_str:
-                        inner_str = inner_str.replace("__MINT_RECAPTCHA__", rc_token)
-                    inner_payload = json.loads(inner_str)
-                    log.info(f"[{self._account_email}] reCAPTCHA token injected into inner_payload (len={len(rc_token)})")
-                else:
-                    log.warning(f"[{self._account_email}] Empty reCAPTCHA token harvested")
-            except Exception as rc_err:
-                log.error(f"[{self._account_email}] Failed to harvest reCAPTCHA token: {rc_err}")
-                return {"status": 0, "rpc_result": None, "error": f"reCAPTCHA harvest failed: {rc_err}", "chunks": []}
+                log.info(f"[{self._account_email}] Executing {rpc_id} in-tab via bridge (action={action})...")
+                res = await bridge.batch_execute(
+                    rpc_id=rpc_id,
+                    inner_payload=inner_payload,
+                    source_path=source_path,
+                    timeout_ms=timeout_ms,
+                    recaptcha_action=action,
+                )
+                if res.get("status") == 200 and res.get("rpc_result") is not None:
+                    return res
+                log.warning(f"[{self._account_email}] In-tab batch_execute {rpc_id} returned: {res.get('error')}")
+            except Exception as bridge_err:
+                log.warning(f"[{self._account_email}] In-tab batch_execute {rpc_id} error: {bridge_err}")
 
-        # 2. Execute via Python FlowSession (G-Labs Studio direct HTTP POST)
+        # 2. Administrative RPCs (jHPbke, nzlxg, as29s, jwpduf) or fallback:
+        # Run directly via Python FlowSession (httpx)
         try:
             session = await self.get_flow_session()
 
