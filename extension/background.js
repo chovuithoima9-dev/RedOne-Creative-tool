@@ -260,9 +260,9 @@ async function _findLabsTab() {
                         s -= 10;
                     }
 
-                    // 5. Slight preference for project view if otherwise equal
-                    if (u.match(/\/project\/[a-zA-Z0-9_-]{36}/)) {
-                        s -= 5;
+                    // 5. Heavy preference for active project tab (reCAPTCHA and tokens loaded here)
+                    if (u.includes("/project/")) {
+                        s -= 80;
                     }
 
                     return s;
@@ -600,17 +600,66 @@ async function _doGetCookiesTask(task) {
 }
 
 
+// ── Flow Project & reCAPTCHA Page Helper ─────────────────────────────
+
+async function _ensureFlowMintPage(tab) {
+    if (!tab || !tab.id) return tab;
+    const url = tab.url || tab.pendingUrl || "";
+    // If already in a project workspace or labs fx, reCAPTCHA Enterprise is loaded natively
+    if (url.includes("/project/") || url.includes("labs.google/fx")) {
+        return tab;
+    }
+    if (url.includes("flow.google.com")) {
+        try {
+            // Find existing project link on dashboard
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                world: "MAIN",
+                func: () => {
+                    const a = document.querySelector('a[href*="/project/"]');
+                    return a ? (a.getAttribute("href") || "") : "";
+                },
+            });
+            const projHref = results && results[0] && results[0].result;
+            if (projHref) {
+                const fullUrl = projHref.startsWith("http") ? projHref : ("https://flow.google.com" + projHref);
+                console.log("[RedOne] Navigating Flow tab into project workspace for reCAPTCHA:", fullUrl);
+                await chrome.tabs.update(tab.id, { url: fullUrl });
+                await new Promise((resolve) => {
+                    const l = (id, info) => {
+                        if (id === tab.id && info.status === "complete") {
+                            chrome.tabs.onUpdated.removeListener(l);
+                            resolve();
+                        }
+                    };
+                    chrome.tabs.onUpdated.addListener(l);
+                    setTimeout(() => {
+                        chrome.tabs.onUpdated.removeListener(l);
+                        resolve();
+                    }, 12000);
+                });
+                await new Promise(r => setTimeout(r, 2000));
+                return await chrome.tabs.get(tab.id);
+            }
+        } catch (e) {
+            console.warn("[RedOne] _ensureFlowMintPage navigation error:", e);
+        }
+    }
+    return tab;
+}
+
 // ── Task: reCAPTCHA harvest ──────────────────────────────────────────
 
 async function _doRecaptchaTask(task) {
     const { site_key = "", action = "" } = task.payload || {};
-    const tab = await _findLabsTab();
+    let tab = await _findLabsTab();
     if (!tab) {
         return { token: null, error: "no labs.google tab open" };
     }
     if (!(await _isSignedIn())) {
         return { token: null, error: "user not signed into Google" };
     }
+    tab = await _ensureFlowMintPage(tab);
     try {
         const results = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
@@ -619,12 +668,26 @@ async function _doRecaptchaTask(task) {
                 try {
                     let key = (siteKeyArg && !siteKeyArg.includes("@") && siteKeyArg.startsWith("6")) ? siteKeyArg : "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
                     if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
-                        // G-Labs Studio parity: auto-inject recaptcha enterprise script if not present
+                        // Safe injection helper complying with Trusted Types CSP
                         if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {
-                            const s = document.createElement("script");
-                            s.src = `https://www.google.com/recaptcha/enterprise.js?render=${key}`;
-                            s.async = true;
-                            (document.head || document.documentElement).appendChild(s);
+                            try {
+                                const s = document.createElement("script");
+                                let scriptUrl = `https://www.google.com/recaptcha/enterprise.js?render=${key}`;
+                                if (typeof window.trustedTypes !== "undefined" && window.trustedTypes) {
+                                    try {
+                                        const p = window.trustedTypes.defaultPolicy ||
+                                                  (window.trustedTypes.createPolicy ? window.trustedTypes.createPolicy("redone-rc", { createScriptURL: u => u }) : null);
+                                        if (p && p.createScriptURL) {
+                                            scriptUrl = p.createScriptURL(scriptUrl);
+                                        }
+                                    } catch (_) {}
+                                }
+                                s.src = scriptUrl;
+                                s.async = true;
+                                (document.head || document.documentElement).appendChild(s);
+                            } catch (_) {
+                                // Suppress TrustedScriptURL assignment errors — rely on native page script
+                            }
                         }
                         const _dl = Date.now() + 10000;
                         while (Date.now() < _dl && (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute)) {
@@ -866,8 +929,11 @@ async function _doBatchExecuteTask(task) {
 
     if (!rpcId) return { status: 0, error: "missing rpc_id" };
 
-    const tab = await _findLabsTab();
+    let tab = await _findLabsTab();
     if (!tab) return { status: 0, error: "no flow.google.com tab" };
+    if (recaptchaAction) {
+        tab = await _ensureFlowMintPage(tab);
+    }
 
     try {
         const results = await chrome.scripting.executeScript({
@@ -908,10 +974,24 @@ async function _doBatchExecuteTask(task) {
                             const SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
                             if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
                                 if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {
-                                    const s = document.createElement("script");
-                                    s.src = `https://www.google.com/recaptcha/enterprise.js?render=${SITE_KEY}`;
-                                    s.async = true;
-                                    (document.head || document.documentElement).appendChild(s);
+                                    try {
+                                        const s = document.createElement("script");
+                                        let scriptUrl = `https://www.google.com/recaptcha/enterprise.js?render=${SITE_KEY}`;
+                                        if (typeof window.trustedTypes !== "undefined" && window.trustedTypes) {
+                                            try {
+                                                const p = window.trustedTypes.defaultPolicy ||
+                                                          (window.trustedTypes.createPolicy ? window.trustedTypes.createPolicy("redone-rc", { createScriptURL: u => u }) : null);
+                                                if (p && p.createScriptURL) {
+                                                    scriptUrl = p.createScriptURL(scriptUrl);
+                                                }
+                                            } catch (_) {}
+                                        }
+                                        s.src = scriptUrl;
+                                        s.async = true;
+                                        (document.head || document.documentElement).appendChild(s);
+                                    } catch (_) {
+                                        // Suppress TrustedScriptURL assignment errors — rely on native page script
+                                    }
                                 }
                                 const _dl = Date.now() + 10000;
                                 while (Date.now() < _dl && (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute)) {

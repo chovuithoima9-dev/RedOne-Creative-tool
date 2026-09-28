@@ -86,12 +86,27 @@ class FlowCaptchaProvider:
 
                         if (typeof grecaptcha === 'undefined' || !grecaptcha.enterprise) {{
                             if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {{
-                                const s = document.createElement('script');
-                                s.src = 'https://www.google.com/recaptcha/enterprise.js?render={self.site_key}';
-                                s.async = true;
-                                s.onload = () => {{ setTimeout(runExecute, 500); }};
-                                s.onerror = () => {{ clearTimeout(timer); reject('failed to load script'); }};
-                                (document.head || document.documentElement).appendChild(s);
+                                try {{
+                                    let scriptUrl = 'https://www.google.com/recaptcha/enterprise.js?render={self.site_key}';
+                                    if (typeof window.trustedTypes !== 'undefined' && window.trustedTypes) {{
+                                        try {{
+                                            const p = window.trustedTypes.defaultPolicy ||
+                                                      (window.trustedTypes.createPolicy ? window.trustedTypes.createPolicy('redone-rc', {{ createScriptURL: u => u }}) : null);
+                                            if (p && p.createScriptURL) {{
+                                                scriptUrl = p.createScriptURL(scriptUrl);
+                                            }}
+                                        }} catch (_) {{}}
+                                    }}
+                                    const s = document.createElement('script');
+                                    s.src = scriptUrl;
+                                    s.async = true;
+                                    s.onload = () => {{ setTimeout(runExecute, 500); }};
+                                    s.onerror = (err) => {{ clearTimeout(timer); reject('failed to load script: ' + err); }};
+                                    (document.head || document.documentElement).appendChild(s);
+                                }} catch (e) {{
+                                    clearTimeout(timer);
+                                    reject('script injection error: ' + e);
+                                }}
                             }} else {{
                                 setTimeout(runExecute, 1000);
                             }}
