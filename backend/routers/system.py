@@ -347,7 +347,8 @@ async def test_bootstrap_session():
 
     # 3. Create FlowSession and bootstrap
     email = bridge.get_active_account_email() or "user@gmail.com"
-    session = FlowSession(account_email=email)
+    ua = bridge.get_user_agent()
+    session = FlowSession(account_email=email, user_agent=ua)
     session.update_cookies_from_list(cookies)
     try:
         await session.bootstrap(force=True)

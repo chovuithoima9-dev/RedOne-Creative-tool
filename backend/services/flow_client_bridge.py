@@ -166,6 +166,10 @@ class BridgeFlowClient(FlowClient):
                 account_email=self._account_email,
                 user_agent=ua,
             )
+        else:
+            live_ua = bridge.get_user_agent()
+            if live_ua:
+                self._flow_session.user_agent = live_ua
         if not self._flow_session.cookie_str:
             cookie_res = await bridge.get_cookies([
                 "flow.google.com",
