@@ -634,7 +634,6 @@ async function _doRecaptchaTask(task) {
                     if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
                         return { token: null, error: "grecaptcha.enterprise not loaded" };
                     }
-                    let key = (siteKeyArg && !siteKeyArg.includes("@") && siteKeyArg.startsWith("6")) ? siteKeyArg : "";
                     if (!key) {
                         // Try the internal grecaptcha config — most reliable source
                         try {
@@ -905,6 +904,7 @@ async function _doBatchExecuteTask(task) {
                     // Google to flag as UNUSUAL_ACTIVITY (context mismatch).
                     let finalPayloadJson = innerPayloadJson;
                     if (recaptchaActionArg) {
+                        try {
                             const SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
                             if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
                                 if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {
