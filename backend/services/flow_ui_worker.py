@@ -376,38 +376,94 @@ class FlowUIWorker:
 
             asyncio.create_task(_process_video())
 
+    async def _is_settings_open(self, page: Page) -> bool:
+        """Check if the settings overlay is currently open and visible."""
+        return await page.evaluate("""() => {
+            const panes = Array.from(document.querySelectorAll('.cdk-overlay-pane'));
+            return panes.some(el => {
+                const s = window.getComputedStyle(el);
+                if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width < 50 || r.height < 50) return false;
+                const text = el.innerText || '';
+                return text.includes('Hình ảnh') || text.includes('Video') ||
+                       text.includes('Nano Banana') || text.includes('Veo') ||
+                       el.querySelector('mat-button-toggle') !== null;
+            });
+        }""")
+
     async def _open_settings(self, page: Page) -> Locator:
         """Reliably open settings overlay and return the overlay locator."""
-        overlay = page.locator(".cdk-overlay-pane")
-        if await overlay.count() > 0 and await overlay.first.is_visible():
-            return overlay.first
+        # 1. If already open, return it immediately
+        if await self._is_settings_open(page):
+            panes = page.locator(".cdk-overlay-pane:has(mat-button-toggle), .cdk-overlay-pane:has-text('Hình ảnh'), .cdk-overlay-pane:has-text('Video')")
+            if await panes.count() > 0:
+                return panes.first
+            return page.locator(".cdk-overlay-pane").first
 
         btn = page.locator(".settings-trigger-button").first
         if await btn.count() == 0:
             raise RuntimeError("Settings trigger button (.settings-trigger-button) not found")
 
         for attempt in range(3):
+            # Click to open (Playwright click or JS click fallback)
             try:
-                await btn.click(force=True, timeout=2500)
-                await page.wait_for_selector(".cdk-overlay-pane", state="visible", timeout=3000)
-                return page.locator(".cdk-overlay-pane").first
+                await btn.click(timeout=2000)
             except Exception:
-                try:
-                    await btn.focus()
-                    await page.keyboard.press("Enter")
-                    await page.wait_for_selector(".cdk-overlay-pane", state="visible", timeout=3000)
+                await page.evaluate("""() => {
+                    const b = document.querySelector('.settings-trigger-button');
+                    if (b) b.click();
+                }""")
+
+            # Poll for visible settings pane
+            for _ in range(12):
+                await page.wait_for_timeout(250)
+                if await self._is_settings_open(page):
+                    panes = page.locator(".cdk-overlay-pane:has(mat-button-toggle), .cdk-overlay-pane:has-text('Hình ảnh'), .cdk-overlay-pane:has-text('Video')")
+                    if await panes.count() > 0:
+                        return panes.first
                     return page.locator(".cdk-overlay-pane").first
-                except Exception:
-                    await page.wait_for_timeout(300)
+
+            # If not opened, try Enter key on attempt 2
+            try:
+                await btn.focus()
+                await page.keyboard.press("Enter")
+            except Exception:
+                pass
+            await page.wait_for_timeout(300)
+
+        # Final check if any overlay is visible
+        if await self._is_settings_open(page):
+            return page.locator(".cdk-overlay-pane").first
 
         raise RuntimeError("Failed to open Google Flow settings overlay")
 
     async def _close_settings(self, page: Page) -> None:
         """Safely close settings overlay if open."""
-        overlay = page.locator(".cdk-overlay-pane")
-        if await overlay.count() > 0 and await overlay.first.is_visible():
+        for _ in range(3):
+            if not await self._is_settings_open(page):
+                break
             await page.keyboard.press("Escape")
-            await page.wait_for_timeout(400)
+            await page.wait_for_timeout(300)
+            if not await self._is_settings_open(page):
+                break
+            await page.evaluate("""() => {
+                const backdrop = document.querySelector('.cdk-overlay-backdrop');
+                if (backdrop) backdrop.click();
+            }""")
+            await page.wait_for_timeout(300)
+
+    @staticmethod
+    async def _safe_click(locator: Locator) -> None:
+        """Click an element safely, falling back to JavaScript click if outside viewport or intercepted."""
+        try:
+            await locator.scroll_into_view_if_needed(timeout=1000)
+            await locator.click(timeout=1500)
+        except Exception:
+            try:
+                await locator.evaluate("el => el.click()")
+            except Exception:
+                pass
 
     async def _apply_settings(
         self,
@@ -428,7 +484,13 @@ class FlowUIWorker:
         target_model_name = resolve_flow_image_model(model_key)
 
         log.info(f"[FlowUIWorker] Applying UI image settings: is_video={is_video}, model={target_model_name}, aspect={ar_target}, count={count_target}...")
-        await self._open_settings(page)
+        try:
+            await self._open_settings(page)
+        except Exception as e:
+            if not is_video:
+                log.warning(f"[FlowUIWorker] Settings overlay open failed ({e}), but already in Image mode. Proceeding with current settings.")
+                return
+            raise
 
         # 1. Switch back to Image mode if currently in Video mode
         if is_video:
@@ -439,9 +501,9 @@ class FlowUIWorker:
                     log.info("[FlowUIWorker] Switching mode: Video -> Hình ảnh...")
                     t_btn = img_toggle.locator("button")
                     if await t_btn.count() > 0:
-                        await t_btn.first.click(force=True)
+                        await self._safe_click(t_btn.first)
                     else:
-                        await img_toggle.first.click(force=True)
+                        await self._safe_click(img_toggle.first)
                     await page.wait_for_timeout(400)
 
         # 2. Select Image Model if needed
@@ -450,23 +512,23 @@ class FlowUIWorker:
             curr_model_text = await model_btn.inner_text()
             if target_model_name.lower() not in curr_model_text.lower():
                 log.info(f"[FlowUIWorker] Switching image model: current='{curr_model_text.strip()}' -> target='{target_model_name}'")
-                await model_btn.click(force=True)
+                await self._safe_click(model_btn)
                 await page.wait_for_timeout(400)
                 opt_btn = page.locator(f".cdk-overlay-pane button:has-text('{target_model_name}')")
                 if await opt_btn.count() > 0:
-                    await opt_btn.first.click(force=True)
+                    await self._safe_click(opt_btn.first)
                     await page.wait_for_timeout(300)
 
         # 3. Aspect ratio
         opt_ar = page.locator(f".cdk-overlay-pane button:has-text('{ar_target}')")
         if await opt_ar.count() > 0:
-            await opt_ar.first.click(force=True)
+            await self._safe_click(opt_ar.first)
             await page.wait_for_timeout(200)
 
         # 4. Output count
         opt_count = page.locator(f".cdk-overlay-pane button:has-text('{count_target}')")
         if await opt_count.count() > 0:
-            await opt_count.first.click(force=True)
+            await self._safe_click(opt_count.first)
             await page.wait_for_timeout(200)
 
         await self._close_settings(page)
@@ -498,7 +560,13 @@ class FlowUIWorker:
         target_model_name = resolve_flow_video_model(model_key)
 
         log.info(f"[FlowUIWorker] Applying video UI settings: mode={video_mode}, model={target_model_name}, ar={ar_target}, dur={dur_target}, count={count_target}...")
-        await self._open_settings(page)
+        try:
+            await self._open_settings(page)
+        except Exception as e:
+            if is_video:
+                log.warning(f"[FlowUIWorker] Settings overlay open failed ({e}), but already in Video mode. Proceeding.")
+                return
+            raise
 
         # 1. Switch to Video mode if needed
         vid_btn = page.locator(".cdk-overlay-pane button:has-text('Video')")
@@ -794,7 +862,7 @@ class FlowUIWorker:
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
             ],
-            viewport={"width": 1280, "height": 720},
+            viewport={"width": 1600, "height": 1000},
         )
         self._context.on("response", self._on_response)
 
