@@ -120,10 +120,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (
         changeInfo.status === "complete" &&
         tab.url &&
-        (tab.url.includes("labs.google") || tab.url.includes("flow.google.com")) &&
-        !_polling
+        (tab.url.includes("labs.google") || tab.url.includes("flow.google.com"))
     ) {
-        _pollLoop();
+        try {
+            chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+        } catch (_) {}
+        if (!_polling) {
+            _pollLoop();
+        }
     }
 });
 
@@ -264,7 +268,13 @@ async function _findLabsTab() {
                     return s;
                 };
 
-                return labsTabs.sort((a, b) => score(a) - score(b))[0];
+                const chosen = labsTabs.sort((a, b) => score(a) - score(b))[0];
+                if (chosen && chosen.id) {
+                    try {
+                        chrome.tabs.update(chosen.id, { autoDiscardable: false }).catch(() => {});
+                    } catch (_) {}
+                }
+                return chosen;
             }
         } catch (_) { /* fall through to retry */ }
         await new Promise(r => setTimeout(r, 300));
@@ -1245,6 +1255,16 @@ function _delay(ms) {
 // ── Popup / content script message handlers ──────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg && msg.type === "LABS_TAB_READY") {
+        if (_sender && _sender.tab && _sender.tab.id) {
+            try {
+                chrome.tabs.update(_sender.tab.id, { autoDiscardable: false }).catch(() => {});
+            } catch (_) {}
+        }
+        if (!_polling) _pollLoop();
+        sendResponse({ ok: true });
+        return true;
+    }
     if (msg && msg.type === "GET_METRICS") {
         (async () => {
             // Active probe — re-verify backend reachability before
