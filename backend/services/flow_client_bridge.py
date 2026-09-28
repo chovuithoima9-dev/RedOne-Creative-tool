@@ -201,30 +201,26 @@ class BridgeFlowClient(FlowClient):
         - Administrative RPCs (jHPbke, nzlxg, UpteDb, jwpduf) do not require reCAPTCHA and run
           instantaneously (~200ms) in Python FlowSession without interrupting tab focus.
         """
-        # 1. Primary path for generation RPCs: In-tab batch_execute
-        # Why: Google reCAPTCHA Enterprise enforces TLS fingerprint & origin binding.
-        # Executing the RPC inside the Chrome tab (via bridge.batch_execute) ensures the
-        # inline reCAPTCHA token, TLS session, and Origin header match 100%, completely
-        # eliminating PUBLIC_ERROR_UNUSUAL_ACTIVITY (Error 7).
+        # G-Labs Studio Architecture:
+        # All batchexecute RPCs are dispatched directly from Python FlowSession (httpx HTTP/2).
+        # When a generation RPC requires a reCAPTCHA Enterprise token (or contains __MINT_RECAPTCHA__),
+        # Python asks the Chrome extension to harvest a fresh token from the open flow.google.com tab,
+        # injects the token into inner_payload, and dispatches the RPC cleanly via Python.
         has_recaptcha_placeholder = isinstance(inner_payload, (list, dict, str)) and "__MINT_RECAPTCHA__" in json.dumps(inner_payload)
         if recaptcha_action or has_recaptcha_placeholder:
             action = recaptcha_action or "IMAGE_GENERATION"
-            try:
-                log.info(f"[{self._account_email}] Executing {rpc_id} in-tab via bridge (action={action})...")
-                res = await bridge.batch_execute(
-                    rpc_id=rpc_id,
-                    inner_payload=inner_payload,
-                    source_path=source_path,
-                    timeout_ms=timeout_ms,
-                    recaptcha_action=action,
-                )
-                if res.get("status") == 200 and res.get("rpc_result") is not None:
-                    return res
-                log.warning(f"[{self._account_email}] In-tab batch_execute {rpc_id} returned: {res.get('error')}")
-            except Exception as bridge_err:
-                log.warning(f"[{self._account_email}] In-tab batch_execute {rpc_id} error: {bridge_err}")
+            log.info(f"[{self._account_email}] Harvesting reCAPTCHA token via Chrome tab (action={action})...")
+            rc_token = await self.get_recaptcha_token(action=action)
+            if not rc_token:
+                log.warning(f"[{self._account_email}] Failed to harvest reCAPTCHA token for {rpc_id}")
+                return {"status": 0, "rpc_result": None, "error": f"reCAPTCHA harvest failed: grecaptcha not ready (action={action})", "chunks": []}
 
-        # 2. Administrative RPCs (jHPbke, nzlxg, as29s, jwpduf) or fallback:
+            p_str = json.dumps(inner_payload) if not isinstance(inner_payload, str) else inner_payload
+            if "__MINT_RECAPTCHA__" in p_str:
+                p_str = p_str.replace('"__MINT_RECAPTCHA__"', json.dumps(rc_token))
+                inner_payload = json.loads(p_str)
+                log.info(f"[{self._account_email}] reCAPTCHA token injected into inner_payload (len={len(rc_token)})")
+
         # Run directly via Python FlowSession (httpx)
         try:
             session = await self.get_flow_session()
@@ -863,13 +859,15 @@ class BridgeFlowClient(FlowClient):
 
     # Model name mapping for batchexecute (may differ from REST API)
     BOQ_IMAGE_MODEL_MAP = {
-        "nano_banana_pro": "GEM_PIX_2",
-        "nano_banana_2": "NARWHAL",
+        "nano_banana_pro": "HARBOR_SEAL",
+        "nano_banana_2": "HARBOR_SEAL",
         "nano_banana_lite": "HARBOR_SEAL",
+        "harbor_seal": "HARBOR_SEAL",
         "imagen_4": "IMAGEN_3_5",
         "imagen_3_5": "IMAGEN_3_5",
         "imagen_3": "IMAGEN_3",
         "imagen_3_fast": "IMAGEN_3_FAST",
+        "gem_pix_2": "GEM_PIX_2",
     }
 
     # Aspect ratio → numeric code used in batchexecute (_.PI & _.HSa in Google bundle)
@@ -916,7 +914,7 @@ class BridgeFlowClient(FlowClient):
                 resolved_refs.append(str(p))
         reference_images = resolved_refs
 
-        model_name = self.BOQ_IMAGE_MODEL_MAP.get(model_key, "GEM_PIX_2")
+        model_name = self.BOQ_IMAGE_MODEL_MAP.get(model_key, "HARBOR_SEAL")
         ar_code = self.BOQ_ASPECT_RATIO_MAP.get(aspect_ratio, 3)
 
         # Preflight session to match Google Flow Angular frontend (nzlxg)

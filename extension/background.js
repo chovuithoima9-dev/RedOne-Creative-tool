@@ -600,55 +600,22 @@ async function _doGetCookiesTask(task) {
 }
 
 
-const LABS_FX_URL = "https://labs.google/fx";
-
 async function _ensureFlowMintPage(tab) {
     if (!tab || !tab.id) return tab;
     const url = tab.url || tab.pendingUrl || "";
-    // If already in a project workspace or labs fx, reCAPTCHA Enterprise is loaded natively
-    if (url.includes("/project/") || url.includes("labs.google/fx")) {
+    // If already on flow.google.com (dashboard or project workspace), keep it there!
+    // reCAPTCHA Enterprise is loaded natively on flow.google.com with sitekey 6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV.
+    if (url.includes("flow.google.com")) {
         return tab;
     }
-    if (url.includes("flow.google.com")) {
-        try {
-            // Find existing project link on dashboard
-            const results = await chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                world: "MAIN",
-                func: () => {
-                    const a = document.querySelector('a[href*="/project/"]');
-                    return a ? (a.getAttribute("href") || "") : "";
-                },
-            });
-            const projHref = results && results[0] && results[0].result;
-            if (projHref) {
-                const fullUrl = projHref.startsWith("http") ? projHref : ("https://flow.google.com" + projHref);
-                console.log("[RedOne] Navigating Flow tab into project workspace for reCAPTCHA:", fullUrl);
-                await chrome.tabs.update(tab.id, { url: fullUrl });
-                await new Promise((resolve) => {
-                    const l = (id, info) => {
-                        if (id === tab.id && info.status === "complete") {
-                            chrome.tabs.onUpdated.removeListener(l);
-                            resolve();
-                        }
-                    };
-                    chrome.tabs.onUpdated.addListener(l);
-                    setTimeout(() => {
-                        chrome.tabs.onUpdated.removeListener(l);
-                        resolve();
-                    }, 12000);
-                });
-                await new Promise(r => setTimeout(r, 2000));
-                return await chrome.tabs.get(tab.id);
-            }
-        } catch (e) {
-            console.warn("[RedOne] _ensureFlowMintPage navigation error:", e);
-        }
+    // If on labs.google, keep it
+    if (url.includes("labs.google")) {
+        return tab;
     }
-    // G-Labs Studio parity: Fallback navigation to labs.google/fx where reCAPTCHA Enterprise is loaded natively
+    // If on an unrelated tab, navigate to flow.google.com
     try {
-        console.log("[RedOne] Navigating tab to labs.google/fx for native reCAPTCHA:", LABS_FX_URL);
-        await chrome.tabs.update(tab.id, { url: LABS_FX_URL });
+        console.log("[RedOne] Navigating tab to flow.google.com for native reCAPTCHA");
+        await chrome.tabs.update(tab.id, { url: "https://flow.google.com/" });
         await new Promise((resolve) => {
             const l = (id, info) => {
                 if (id === tab.id && info.status === "complete") {
@@ -665,7 +632,7 @@ async function _ensureFlowMintPage(tab) {
         await new Promise(r => setTimeout(r, 2000));
         return await chrome.tabs.get(tab.id);
     } catch (e) {
-        console.warn("[RedOne] _ensureFlowMintPage fx nav error:", e);
+        console.warn("[RedOne] _ensureFlowMintPage nav error:", e);
     }
     return tab;
 }
