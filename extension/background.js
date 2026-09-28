@@ -600,7 +600,7 @@ async function _doGetCookiesTask(task) {
 }
 
 
-// ── Flow Project & reCAPTCHA Page Helper ─────────────────────────────
+const LABS_FX_URL = "https://labs.google/fx";
 
 async function _ensureFlowMintPage(tab) {
     if (!tab || !tab.id) return tab;
@@ -645,6 +645,28 @@ async function _ensureFlowMintPage(tab) {
             console.warn("[RedOne] _ensureFlowMintPage navigation error:", e);
         }
     }
+    // G-Labs Studio parity: Fallback navigation to labs.google/fx where reCAPTCHA Enterprise is loaded natively
+    try {
+        console.log("[RedOne] Navigating tab to labs.google/fx for native reCAPTCHA:", LABS_FX_URL);
+        await chrome.tabs.update(tab.id, { url: LABS_FX_URL });
+        await new Promise((resolve) => {
+            const l = (id, info) => {
+                if (id === tab.id && info.status === "complete") {
+                    chrome.tabs.onUpdated.removeListener(l);
+                    resolve();
+                }
+            };
+            chrome.tabs.onUpdated.addListener(l);
+            setTimeout(() => {
+                chrome.tabs.onUpdated.removeListener(l);
+                resolve();
+            }, 12000);
+        });
+        await new Promise(r => setTimeout(r, 2000));
+        return await chrome.tabs.get(tab.id);
+    } catch (e) {
+        console.warn("[RedOne] _ensureFlowMintPage fx nav error:", e);
+    }
     return tab;
 }
 
@@ -667,32 +689,10 @@ async function _doRecaptchaTask(task) {
             func: async (siteKeyArg, actionArg) => {
                 try {
                     let key = (siteKeyArg && !siteKeyArg.includes("@") && siteKeyArg.startsWith("6")) ? siteKeyArg : "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
-                    if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
-                        // Safe injection helper complying with Trusted Types CSP
-                        if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {
-                            try {
-                                const s = document.createElement("script");
-                                let scriptUrl = `https://www.google.com/recaptcha/enterprise.js?render=${key}`;
-                                if (typeof window.trustedTypes !== "undefined" && window.trustedTypes) {
-                                    try {
-                                        const p = window.trustedTypes.defaultPolicy ||
-                                                  (window.trustedTypes.createPolicy ? window.trustedTypes.createPolicy("redone-rc", { createScriptURL: u => u }) : null);
-                                        if (p && p.createScriptURL) {
-                                            scriptUrl = p.createScriptURL(scriptUrl);
-                                        }
-                                    } catch (_) {}
-                                }
-                                s.src = scriptUrl;
-                                s.async = true;
-                                (document.head || document.documentElement).appendChild(s);
-                            } catch (_) {
-                                // Suppress TrustedScriptURL assignment errors — rely on native page script
-                            }
-                        }
-                        const _dl = Date.now() + 10000;
-                        while (Date.now() < _dl && (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute)) {
-                            await new Promise(r => setTimeout(r, 250));
-                        }
+                    // G-Labs Studio architecture: wait for native grecaptcha.enterprise to be loaded by Google
+                    const _dl = Date.now() + 10000;
+                    while (Date.now() < _dl && (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute)) {
+                        await new Promise(r => setTimeout(r, 250));
                     }
                     if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
                         return { token: null, error: "grecaptcha.enterprise not loaded" };
@@ -972,31 +972,9 @@ async function _doBatchExecuteTask(task) {
                     if (recaptchaActionArg) {
                         try {
                             const SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
-                            if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
-                                if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {
-                                    try {
-                                        const s = document.createElement("script");
-                                        let scriptUrl = `https://www.google.com/recaptcha/enterprise.js?render=${SITE_KEY}`;
-                                        if (typeof window.trustedTypes !== "undefined" && window.trustedTypes) {
-                                            try {
-                                                const p = window.trustedTypes.defaultPolicy ||
-                                                          (window.trustedTypes.createPolicy ? window.trustedTypes.createPolicy("redone-rc", { createScriptURL: u => u }) : null);
-                                                if (p && p.createScriptURL) {
-                                                    scriptUrl = p.createScriptURL(scriptUrl);
-                                                }
-                                            } catch (_) {}
-                                        }
-                                        s.src = scriptUrl;
-                                        s.async = true;
-                                        (document.head || document.documentElement).appendChild(s);
-                                    } catch (_) {
-                                        // Suppress TrustedScriptURL assignment errors — rely on native page script
-                                    }
-                                }
-                                const _dl = Date.now() + 10000;
-                                while (Date.now() < _dl && (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute)) {
-                                    await new Promise(r => setTimeout(r, 250));
-                                }
+                            const _dl = Date.now() + 10000;
+                            while (Date.now() < _dl && (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute)) {
+                                await new Promise(r => setTimeout(r, 250));
                             }
                             if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise || !grecaptcha.enterprise.execute) {
                                 return { status: 0, error: "grecaptcha.enterprise not loaded — cannot mint inline token" };

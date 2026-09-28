@@ -65,9 +65,8 @@ class FlowCaptchaProvider:
                 try:
                     context = await browser.new_context()
                     page = await context.new_page()
-                    await page.goto("https://flow.google.com/about", timeout=15000, wait_until="domcontentloaded")
+                    await page.goto("https://labs.google/fx", timeout=15000, wait_until="networkidle")
 
-                    # Ensure grecaptcha script is injected if missing
                     js = f"""
                     new Promise((resolve, reject) => {{
                         const timer = setTimeout(() => reject('timeout'), 15000);
@@ -84,35 +83,18 @@ class FlowCaptchaProvider:
                             }}
                         }}
 
-                        if (typeof grecaptcha === 'undefined' || !grecaptcha.enterprise) {{
-                            if (!document.querySelector('script[src*="recaptcha/enterprise.js"]')) {{
-                                try {{
-                                    let scriptUrl = 'https://www.google.com/recaptcha/enterprise.js?render={self.site_key}';
-                                    if (typeof window.trustedTypes !== 'undefined' && window.trustedTypes) {{
-                                        try {{
-                                            const p = window.trustedTypes.defaultPolicy ||
-                                                      (window.trustedTypes.createPolicy ? window.trustedTypes.createPolicy('redone-rc', {{ createScriptURL: u => u }}) : null);
-                                            if (p && p.createScriptURL) {{
-                                                scriptUrl = p.createScriptURL(scriptUrl);
-                                            }}
-                                        }} catch (_) {{}}
-                                    }}
-                                    const s = document.createElement('script');
-                                    s.src = scriptUrl;
-                                    s.async = true;
-                                    s.onload = () => {{ setTimeout(runExecute, 500); }};
-                                    s.onerror = (err) => {{ clearTimeout(timer); reject('failed to load script: ' + err); }};
-                                    (document.head || document.documentElement).appendChild(s);
-                                }} catch (e) {{
-                                    clearTimeout(timer);
-                                    reject('script injection error: ' + e);
-                                }}
+                        const deadline = Date.now() + 8000;
+                        const check = () => {{
+                            if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise && grecaptcha.enterprise.execute) {{
+                                runExecute();
+                            }} else if (Date.now() < deadline) {{
+                                setTimeout(check, 250);
                             }} else {{
-                                setTimeout(runExecute, 1000);
+                                clearTimeout(timer);
+                                reject('grecaptcha load timeout');
                             }}
-                        }} else {{
-                            runExecute();
-                        }}
+                        }};
+                        check();
                     }})
                     """
                     token = await page.evaluate(js)
