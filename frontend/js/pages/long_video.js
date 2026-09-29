@@ -517,9 +517,22 @@ export function renderLongVideo(root) {
 
   // Deep-link from Tasks Manager (eye icon) takes priority over "latest".
   const pending = window.__app && window.__app._pendingTaskId;
-  if (pending != null && tasksStore.get(pending)) {
-    attachToTask(pending);
+  if (pending != null) {
     window.__app._pendingTaskId = null;
+    const existing = tasksStore.get(pending);
+    if (existing) {
+      attachToTask(existing.id);
+    } else {
+      tasksStore.getOrFetch(pending).then((t) => {
+        if (!root.isConnected) return;
+        if (t) {
+          attachToTask(t.id);
+        } else {
+          const latest = tasksStore.latestByKind('long_video');
+          if (latest) attachToTask(latest.id);
+        }
+      });
+    }
   } else {
     const latest = tasksStore.latestByKind('long_video');
     if (latest) attachToTask(latest.id);

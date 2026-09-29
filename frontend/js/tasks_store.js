@@ -6,6 +6,7 @@
 // • Subscribes to WebSocket events ONCE at app boot.
 
 import { ws } from './ws.js';
+import { api } from './api.js';
 
 const STORAGE_KEY = 'redone_tasks_v1';
 const MAX_STORED_TASKS = 20;    // prune oldest beyond this
@@ -75,7 +76,10 @@ function restore() {
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return;
     for (const t of arr) {
-      if (t && t.id) tasks.set(t.id, t);
+      if (t && t.id) {
+        tasks.set(t.id, t);
+        tasks.set(String(t.id), t);
+      }
     }
     log(`restored ${arr.length} tasks from localStorage`);
   } catch (e) {
@@ -85,10 +89,10 @@ function restore() {
 restore();
 
 function notify(taskId) {
-  const t = tasks.get(taskId);
+  const t = tasksStore.get(taskId);
   if (!t) return;
   persist();
-  const subs = subscribers.get(taskId);
+  const subs = subscribers.get(t.id) || (typeof taskId !== 'number' ? subscribers.get(taskId) : null);
   if (subs) for (const fn of subs) {
     try { fn(t); } catch (e) { console.error(e); }
   }
@@ -100,8 +104,9 @@ function notify(taskId) {
 
 export const tasksStore = {
   register(taskId, kind, meta = {}) {
+    const numId = typeof taskId === 'string' && /^\d+$/.test(taskId) ? parseInt(taskId, 10) : taskId;
     const t = {
-      id: taskId,
+      id: numId,
       kind,
       name: meta.name || '',
       idea: meta.idea || '',
@@ -132,13 +137,42 @@ export const tasksStore = {
       flow_account_email: meta.flow_account_email || null,
       created_at: Date.now(),
     };
-    tasks.set(taskId, t);
+    tasks.set(numId, t);
+    tasks.set(String(numId), t);
     log(`register task=${taskId} kind=${kind} items=${t.total}`);
-    notify(taskId);
+    notify(numId);
     return t;
   },
 
-  get(taskId) { return tasks.get(taskId) || null; },
+  get(taskId) {
+    if (taskId == null) return null;
+    let t = tasks.get(taskId);
+    if (t) return t;
+    if (typeof taskId === 'string' && /^\d+$/.test(taskId)) {
+      t = tasks.get(parseInt(taskId, 10));
+      if (t) return t;
+    } else if (typeof taskId === 'number') {
+      t = tasks.get(String(taskId));
+      if (t) return t;
+    }
+    return null;
+  },
+
+  async getOrFetch(taskId) {
+    if (taskId == null) return null;
+    const existing = this.get(taskId);
+    if (existing) return existing;
+    try {
+      const numId = parseInt(taskId, 10);
+      const res = await api.tasks.get(isNaN(numId) ? taskId : numId);
+      if (res && res.task) {
+        return this.ingest(res.task, res.items || []);
+      }
+    } catch (e) {
+      console.warn(`[tasksStore] getOrFetch task=${taskId} failed:`, e && e.message);
+    }
+    return null;
+  },
 
   latestByKind(kind) {
     let latest = null;
@@ -155,10 +189,11 @@ export const tasksStore = {
   },
 
   on(taskId, fn) {
-    if (!subscribers.has(taskId)) subscribers.set(taskId, new Set());
-    subscribers.get(taskId).add(fn);
+    const key = (typeof taskId === 'string' && /^\d+$/.test(taskId)) ? parseInt(taskId, 10) : taskId;
+    if (!subscribers.has(key)) subscribers.set(key, new Set());
+    subscribers.get(key).add(fn);
     return () => {
-      const s = subscribers.get(taskId);
+      const s = subscribers.get(key);
       if (s) s.delete(fn);
     };
   },
@@ -351,7 +386,8 @@ export const tasksStore = {
    */
   ingest(task, items = []) {
     if (!task || !task.id) return null;
-    const kind = (task.mode || 'image').toLowerCase();
+    let kind = (task.mode || 'image').toLowerCase();
+    if (kind === 't2v' || kind === 'i2v') kind = 'content';
     const statusMap = {
       COMPLETED: 'completed',
       RUNNING: 'running',
@@ -360,15 +396,17 @@ export const tasksStore = {
       ERROR: 'error',
       CANCELLED: 'cancelled',
     };
+    const numId = typeof task.id === 'string' && /^\d+$/.test(task.id) ? parseInt(task.id, 10) : task.id;
+    const isUpscale = (task.mode || '').toLowerCase() === 'flow_upscale' || !!(task.character_images_json && task.character_images_json.includes('upscale'));
     const t = {
-      id: task.id,
+      id: numId,
       kind: kind,
       name: task.name || '',
       idea: task.idea || '',
       status: statusMap[task.status] || (task.status || '').toLowerCase() || 'completed',
       aspect: task.aspect_ratio || '16:9',
-      model: task.image_model || '',
-      upscale: false,
+      model: task.image_model || task.quality || '',
+      upscale: isUpscale,
       videosPerPrompt: 1,
       items: (items || []).map(it => {
         let extra = {};
@@ -408,9 +446,10 @@ export const tasksStore = {
         }
       }
     }
-    tasks.set(task.id, t);
+    tasks.set(numId, t);
+    tasks.set(String(numId), t);
     persist();
-    notify(task.id);
+    notify(numId);
     return t;
   },
 };
@@ -442,7 +481,18 @@ function findOrClaimSlot(t, itemId) {
       return it;
     }
   }
-  return null;
+  // If no empty slot exists (e.g. task ingested from DB then retried/added new item)
+  const newItem = {
+    id: itemId,
+    prompt: '',
+    status: 'pending',
+    output_url: null,
+    output_path: null,
+    error: null,
+  };
+  t.items.push(newItem);
+  t.total = Math.max(t.total, t.items.length);
+  return newItem;
 }
 
 ws.on('task_started', (d) => {

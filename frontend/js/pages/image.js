@@ -929,9 +929,24 @@ export function renderImage(root) {
   //   2. the task the user was last viewing (sticky — don't auto-jump)
   //   3. the newest task of this kind (first ever open)
   const pending = window.__app && window.__app._pendingTaskId;
-  if (pending != null && tasksStore.get(pending)) {
-    attachToTask(pending);
+  if (pending != null) {
     window.__app._pendingTaskId = null;
+    const existing = tasksStore.get(pending);
+    if (existing) {
+      attachToTask(existing.id);
+    } else {
+      tasksStore.getOrFetch(pending).then((t) => {
+        if (!root.isConnected) return;
+        if (t) {
+          attachToTask(t.id);
+        } else if (_lastViewedTaskId != null && tasksStore.get(_lastViewedTaskId)) {
+          attachToTask(_lastViewedTaskId);
+        } else {
+          const latest = tasksStore.latestByKind('image');
+          if (latest) attachToTask(latest.id);
+        }
+      });
+    }
   } else if (_lastViewedTaskId != null && tasksStore.get(_lastViewedTaskId)) {
     attachToTask(_lastViewedTaskId);
   } else {

@@ -23,6 +23,7 @@ const KIND_NAV = {
   i2v: 'content',
   long_video: 'long-video',
   shakker: 'shakker',
+  flow_upscale: 'image',
 };
 // Parent task ids whose nested upscale children are collapsed (hidden).
 // Module-level → survives WS reloads + page navigation. Default = expanded.

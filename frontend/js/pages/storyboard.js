@@ -580,31 +580,30 @@ export function renderStoryboard(root) {
     window.__app._pendingTaskId = null;
     const existing = tasksStore.get(pending);
     if (existing) {
-      attachToTask(pending);
+      attachToTask(existing.id);
       if (existing.idea && !form.idea) {
         form.idea = existing.idea;
         const txt = root.querySelector('#sb2-idea');
         if (txt) txt.value = existing.idea;
       }
     } else {
-      // Not in memory (e.g. app restart or older task) -> fetch from backend!
-      api.tasks.get(pending).then((res) => {
+      tasksStore.getOrFetch(pending).then((t) => {
         if (!root.isConnected) return;
-        if (res && res.task) {
-          const t = tasksStore.ingest(res.task, res.items || []);
-          if (t) {
-            attachToTask(t.id);
-            if (t.idea && !form.idea) {
-              form.idea = t.idea;
-              const txt = root.querySelector('#sb2-idea');
-              if (txt) txt.value = t.idea;
-            }
+        if (t) {
+          attachToTask(t.id);
+          if (t.idea && !form.idea) {
+            form.idea = t.idea;
+            const txt = root.querySelector('#sb2-idea');
+            if (txt) txt.value = t.idea;
           }
+        } else if (_taskId && tasksStore.get(_taskId)) {
+          attachToTask(_taskId);
+        } else {
+          const latest = tasksStore.latestByKind('storyboard');
+          if (latest) attachToTask(latest.id);
+          else liveRender();
         }
-      }).catch((e) => {
-        console.warn('Failed to load pending storyboard task', e);
-        liveRender();
-      });
+      }).catch(() => liveRender());
     }
   } else if (_taskId && tasksStore.get(_taskId)) {
     attachToTask(_taskId);

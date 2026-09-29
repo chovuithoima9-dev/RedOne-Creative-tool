@@ -1142,12 +1142,25 @@ export function renderShakker(root) {
   }
 
   const pending = window.__app && window.__app._pendingTaskId;
-  if (pending != null && tasksStore.get(pending)) {
-    const pt = tasksStore.get(pending);
-    form.mode = pt.upscale ? 'upscale' : 'gen';
-    applyMode();
-    attachToTask(pending);
+  if (pending != null) {
     window.__app._pendingTaskId = null;
+    const existing = tasksStore.get(pending);
+    if (existing) {
+      form.mode = existing.upscale ? 'upscale' : 'gen';
+      applyMode();
+      attachToTask(existing.id);
+    } else {
+      tasksStore.getOrFetch(pending).then((pt) => {
+        if (!root.isConnected) return;
+        if (pt) {
+          form.mode = pt.upscale ? 'upscale' : 'gen';
+          applyMode();
+          attachToTask(pt.id);
+        } else {
+          attachForMode();
+        }
+      });
+    }
   } else {
     attachForMode();
   }
