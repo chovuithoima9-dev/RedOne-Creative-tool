@@ -313,15 +313,15 @@ def build_video_ingredients_payload(
     uuid_a = str(uuid.uuid4()).upper()
     uuid_b = str(uuid.uuid4()).upper()
 
-    # Reference images array
-    refs_struct = [[ref_id, None, None, None, 1] for ref_id in ref_media_ids]
+    # Reference images array: [[None, ref_id], ...] as confirmed by HAR capture
+    refs_struct = [[None, ref_id] for ref_id in ref_media_ids]
 
     candidate = [
         prompt_struct,
+        refs_struct,
         model_key,
         ar_code,
         None,
-        refs_struct,
         [None, None, None, None, uuid_a, uuid_b],
     ]
 

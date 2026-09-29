@@ -371,6 +371,21 @@ def interpolation_model_for(quality: str) -> str:
     """Model key for first+last-frame interpolation (Loop video)."""
     return INTERPOLATION_MODEL_MAP.get(quality, INTERPOLATION_MODEL_MAP["lite"])
 
+
+# Reference-to-Video (Ingredients / Components) model keys.
+R2V_MODEL_MAP = {
+    "omni_flash": "omni_flash",
+    "lite":       "veo_3_1_r2v_lite",
+    "fast":       "veo_3_1_r2v_fast",
+    "quality":    "veo_3_1_r2v_quality",
+    "lite_lp":    "veo_3_1_r2v_lite_low_priority",
+}
+
+
+def r2v_model_for(quality: str) -> str:
+    """Model key for Reference-to-Video (Ingredients / Components)."""
+    return R2V_MODEL_MAP.get(quality, R2V_MODEL_MAP["lite"])
+
 # Allowed duration options (seconds) per model preset.
 VIDEO_DURATIONS_BY_MODEL = {
     "omni_flash": [4, 6, 8, 10],

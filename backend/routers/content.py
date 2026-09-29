@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ..database import db
 from ..config import (
     OUTPUT_DIR, TaskStatus, ItemStatus, ASPECT_RATIOS, RESOLUTIONS,
-    video_model_for, interpolation_model_for, get_save_dir, clamp_duration, project_item_stem,
+    video_model_for, interpolation_model_for, r2v_model_for, get_save_dir, clamp_duration, project_item_stem,
 )
 from ..ws_hub import hub
 from ..queue_manager import queue
@@ -276,10 +276,14 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
         # image as BOTH first and last frame (interpolation) so the clip ends
         # where it started. No ref image → nothing to loop.
         is_loop = (loop or video_mode == "start_end_image") and has_ref
+        is_components = (video_mode in ("components", "ingredients", "r2v")) and has_ref
         mode = "i2v" if has_ref else "t2v"
         eff_quality = quality
         duration_s = int(task.get("duration") or 8)
-        if is_loop:
+        if is_components:
+            # Reference-to-Video (Ingredients / Components).
+            model_key = r2v_model_for(eff_quality)
+        elif is_loop:
             # Interpolation model (first+last frame). Omni Flash has none → lite_lp.
             model_key = interpolation_model_for(eff_quality)
         else:

@@ -1220,6 +1220,10 @@ class BridgeFlowClient(FlowClient):
         "veo_3_1_i2v_lite": "veo_3_1_i2v_lite",
         "veo_3_1_i2v_fast": "veo_3_1_i2v_fast",
         "veo_3_1_i2v_quality": "veo_3_1_i2v_quality",
+        "veo_3_1_r2v_lite_low_priority": "veo_3_1_r2v_lite_low_priority",
+        "veo_3_1_r2v_lite": "veo_3_1_r2v_lite",
+        "veo_3_1_r2v_fast": "veo_3_1_r2v_fast",
+        "veo_3_1_r2v_quality": "veo_3_1_r2v_quality",
         "veo_3_1_fast": "veo_3_1_t2v_fast",
         "veo_3_1_quality": "veo_3_1_t2v_quality",
         "omni_flash": "omni_flash",
@@ -1234,22 +1238,50 @@ class BridgeFlowClient(FlowClient):
         prompt: str,
         reference_image: Optional[str] = None,
         end_image: Optional[str] = None,
+        reference_images: Optional[List[str]] = None,
         model_key: str = "veo_3_generate_video_fast",
         aspect_ratio: str = "LANDSCAPE",
         duration: int = 8,
         ref_image_path: Optional[str] = None,
         video_mode: str = "start_image",
     ) -> Optional[str]:
-        """Submit video generation request via Native Flow UI Worker (primary) or BOQ RPC (fallback).
+        """Submit video generation request via BOQ batchexecute RPC.
 
-        - Text-to-Video (T2V)
-        - Image-to-Video (I2V)
+        Supports:
+        - Text-to-Video (T2V) -> RPC YhhmEf (veo_3_1_t2v_*)
+        - Start Frame (I2V) -> RPC eb1hJf (veo_3_1_i2v_*)
+        - First & Last Frame (Interpolation / Loop) -> RPC anprQif (veo_3_1_i2v_*)
+        - Reference Images (Ingredients / R2V) -> RPC MZZa6b (veo_3_1_r2v_*)
         Returns the generation/media ID.
         """
         import uuid as _uuid
         await self.ensure_project_id()
 
-        # 1. Resolve reference image and end image to media_id via maseQ RPC (Zero DOM)
+        is_ingredients = str(video_mode).lower() in ("components", "ingredients", "r2v")
+        is_first_last = str(video_mode).lower() in ("start_end_image", "first_last")
+
+        ref_media_ids: List[str] = []
+        if is_ingredients:
+            # Gather and upload all reference / ingredient images via maseQ RPC
+            target_refs = reference_images if (reference_images and len(reference_images) > 0) else (
+                [ref_image_path or reference_image] if (ref_image_path or reference_image) else []
+            )
+            for r_item in target_refs:
+                if not r_item:
+                    continue
+                r_str = str(r_item)
+                if Path(r_str).exists():
+                    try:
+                        log.info(f"[{self._account_email}] Uploading ingredient reference image {r_str} via maseQ RPC...")
+                        m_id = await self.upload_image(r_str)
+                        if m_id:
+                            ref_media_ids.append(m_id)
+                    except Exception as up_err:
+                        log.warning(f"[{self._account_email}] Failed to upload ingredient {r_str}: {up_err}")
+                else:
+                    ref_media_ids.append(r_str)
+
+        # 1. Resolve reference image and end image to media_id via maseQ RPC
         actual_ref = ref_image_path if (ref_image_path and Path(str(ref_image_path)).exists()) else (
             reference_image if (reference_image and Path(str(reference_image)).exists()) else reference_image
         )
@@ -1274,33 +1306,58 @@ class BridgeFlowClient(FlowClient):
         ar_code = 1 if ("9:16" in str(aspect_ratio) or "PORTRAIT" in str(aspect_ratio).upper()) else 2
 
         # Map model name and RPC ID
-        if reference_image and actual_end:
+        if is_ingredients and (ref_media_ids or reference_image):
+            if not ref_media_ids and reference_image:
+                ref_media_ids = [reference_image]
+            rpc_id = "MZZa6b"
+            if model_key in ("lite_lp", "veo_3_1_r2v_lite_low_priority", "veo_3_1_i2v_lite_low_priority", "veo_3_1_t2v_lite_low_priority"):
+                model_name = "veo_3_1_r2v_lite_low_priority"
+            elif "fast" in str(model_key):
+                model_name = "veo_3_1_r2v_fast"
+            elif "quality" in str(model_key):
+                model_name = "veo_3_1_r2v_quality"
+            else:
+                model_name = "veo_3_1_r2v_lite"
+        elif (is_first_last and reference_image) or (reference_image and actual_end):
+            rpc_id = "anprQif"
+            if not actual_end:
+                actual_end = reference_image  # loop video: end frame = start frame
             if model_key in ("lite_lp", "veo_3_1_i2v_lite_low_priority"):
                 model_name = "veo_3_1_i2v_lite_low_priority"
+            elif "fast" in str(model_key):
+                model_name = "veo_3_1_i2v_fast"
+            elif "quality" in str(model_key):
+                model_name = "veo_3_1_i2v_quality"
             else:
                 model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, "veo_3_1_i2v_lite")
-            rpc_id = "anprQif"
         elif reference_image:
+            rpc_id = "eb1hJf"
             if model_key in ("lite_lp", "veo_3_1_i2v_lite_low_priority"):
                 model_name = "veo_3_1_i2v_lite_low_priority"
             elif model_key and "i2v" in model_key:
                 model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, model_key)
             elif model_key and "fast" in model_key:
                 model_name = "veo_3_1_i2v_fast"
+            elif model_key and "quality" in model_key:
+                model_name = "veo_3_1_i2v_quality"
             else:
                 model_name = "veo_3_1_i2v_lite"
-            rpc_id = "eb1hJf"
         else:
+            rpc_id = "YhhmEf"
             if model_key in ("lite_lp", "veo_3_1_t2v_lite_low_priority"):
                 model_name = "veo_3_1_t2v_lite_low_priority"
+            elif model_key and "fast" in model_key:
+                model_name = "veo_3_1_t2v_fast"
+            elif model_key and "quality" in model_key:
+                model_name = "veo_3_1_t2v_quality"
             else:
                 model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, model_key or "veo_3_1_t2v_lite")
-            rpc_id = "YhhmEf"
 
         source_path = f"/project/{self.project_id}"
         log.info(
             f"[{self._account_email}] (BOQ) Generating video ({rpc_id}): model={model_name}, "
-            f"has_ref={bool(reference_image)}, has_end={bool(actual_end)}, project={self.project_id}"
+            f"mode={video_mode}, has_ref={bool(reference_image)}, has_end={bool(actual_end)}, "
+            f"ingredients_count={len(ref_media_ids)}, project={self.project_id}"
         )
 
         for attempt in range(3):
@@ -1322,7 +1379,19 @@ class BridgeFlowClient(FlowClient):
             uuid_a = str(_uuid.uuid4()).upper()
             uuid_b = str(_uuid.uuid4()).upper()
 
-            if reference_image and actual_end:
+            if rpc_id == "MZZa6b":
+                # Reference / Ingredients Mode (confirmed via flow.google.com.tham chieu.har)
+                refs_item = [[None, ref_id] for ref_id in ref_media_ids]
+                candidate = [
+                    prompt_item,
+                    refs_item,
+                    model_name,
+                    ar_code,
+                    None,
+                    [None, None, None, None, uuid_a, uuid_b],
+                ]
+            elif rpc_id == "anprQif":
+                # First & Last Frame Interpolation
                 ref_config = [None, reference_image, None, None, actual_end, [None, None, 1, 1]]
                 candidate = [
                     prompt_item,
@@ -1332,7 +1401,8 @@ class BridgeFlowClient(FlowClient):
                     ref_config,
                     [None, None, None, None, uuid_a, uuid_b],
                 ]
-            elif reference_image:
+            elif rpc_id == "eb1hJf":
+                # Start Frame Image-to-Video
                 ref_config = [None, reference_image, None, None, None, [None, None, 1, 1]]
                 candidate = [
                     prompt_item,
@@ -1343,7 +1413,7 @@ class BridgeFlowClient(FlowClient):
                     [None, None, None, None, uuid_a, uuid_b],
                 ]
             else:
-                # T2V: 5-item candidate directly ending with UUIDs at index 4 (confirmed via HAR capture)
+                # Text-to-Video: 5-item candidate directly ending with UUIDs at index 4 (confirmed via HAR capture)
                 candidate = [
                     prompt_item,
                     model_name,
