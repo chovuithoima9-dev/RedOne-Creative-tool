@@ -96,6 +96,11 @@ class BridgeFlowClient(FlowClient):
     _ACTIVE_PROJECT_IDS: dict[str, str] = {}
     _FAILED_PROJECT_IDS: set[str] = set()
 
+    # Class-level upload cache across all BridgeFlowClient instances and tasks:
+    # Key: (project_id, resolved_path, mtime, size) -> media_id
+    _UPLOAD_CACHE: dict[tuple, str] = {}
+    _UPLOAD_LOCKS: dict[tuple, asyncio.Lock] = {}
+
     def __init__(self, page=None, cookie_path: str = "", account_email: str = ""):
         # We pass page=None to the parent; everything that touches
         # self._page is overridden in this subclass.
@@ -787,14 +792,50 @@ class BridgeFlowClient(FlowClient):
 
 
     async def upload_image(self, image_path: str | Path) -> str:
-        """Upload image to Google Flow via batchexecute maseQ RPC and return media_id."""
+        """Upload image to Google Flow via batchexecute maseQ RPC and return media_id.
+
+        Cached + deduplicated: the same file is uploaded ONCE per project.
+        Concurrent callers serialize on a per-file lock to prevent duplicate uploads.
+        """
         p = Path(image_path).resolve()
         if not p.exists():
             raise FileNotFoundError(f"Image not found: {image_path}")
-        media_id = await self._upload_image_raw(p)
-        if not media_id:
-            raise ValueError(f"Failed to upload reference image: {p.name}")
-        return media_id
+
+        await self.ensure_project_id()
+
+        try:
+            stt = p.stat()
+            cache_key = (self.project_id, str(p), int(stt.st_mtime), stt.st_size)
+        except OSError:
+            cache_key = (self.project_id, str(p), 0, 0)
+
+        # 1. Fast path: cache hit
+        cached_id = BridgeFlowClient._UPLOAD_CACHE.get(cache_key)
+        if cached_id:
+            log.info(f"[{self._account_email}] (BOQ) Upload cache hit: {p.name} → {cached_id}")
+            return cached_id
+
+        # 2. Per-file lock to serialize concurrent uploads in parallel batches
+        lock = BridgeFlowClient._UPLOAD_LOCKS.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            BridgeFlowClient._UPLOAD_LOCKS[cache_key] = lock
+
+        async with lock:
+            # Recheck after acquiring lock
+            cached_id = BridgeFlowClient._UPLOAD_CACHE.get(cache_key)
+            if cached_id:
+                log.info(f"[{self._account_email}] (BOQ) Upload cache hit (post-lock): {p.name} → {cached_id}")
+                return cached_id
+
+            media_id = await self._upload_image_raw(p)
+            if not media_id:
+                raise ValueError(f"Failed to upload reference image: {p.name}")
+
+            BridgeFlowClient._UPLOAD_CACHE[cache_key] = media_id
+            updated_key = (self.project_id, str(p), cache_key[2], cache_key[3])
+            BridgeFlowClient._UPLOAD_CACHE[updated_key] = media_id
+            return media_id
 
     async def _upload_image_raw(self, path: "Path") -> Optional[str]:
         """Upload image to Flow via batchexecute RPC `maseQ`.
@@ -863,15 +904,17 @@ class BridgeFlowClient(FlowClient):
 
     # Model name mapping for batchexecute (may differ from REST API)
     BOQ_IMAGE_MODEL_MAP = {
-        "nano_banana_pro": "HARBOR_SEAL",
-        "nano_banana_2": "HARBOR_SEAL",
+        "nano_banana_pro": "GEM_PIX_2",
+        "nano_banana_2": "NARWHAL",
         "nano_banana_lite": "HARBOR_SEAL",
+        "nano_banana_2_lite": "HARBOR_SEAL",
         "harbor_seal": "HARBOR_SEAL",
+        "narwhal": "NARWHAL",
+        "gem_pix_2": "GEM_PIX_2",
         "imagen_4": "IMAGEN_3_5",
         "imagen_3_5": "IMAGEN_3_5",
         "imagen_3": "IMAGEN_3",
         "imagen_3_fast": "IMAGEN_3_FAST",
-        "gem_pix_2": "GEM_PIX_2",
     }
 
     # Aspect ratio → numeric code used in batchexecute (_.PI & _.HSa in Google bundle)
@@ -891,6 +934,7 @@ class BridgeFlowClient(FlowClient):
         aspect_ratio: str = "1:1",
         reference_images: list[str] | None = None,
         seed: int | None = None,
+        candidate_count: int = 1,
     ) -> dict:
         """Generate an image using BOQ batchexecute RPC `ogiZ0b`.
 
@@ -918,7 +962,11 @@ class BridgeFlowClient(FlowClient):
                 resolved_refs.append(str(p))
         reference_images = resolved_refs
 
-        model_name = self.BOQ_IMAGE_MODEL_MAP.get(model_key, "HARBOR_SEAL")
+        m_key_lower = model_key.lower() if isinstance(model_key, str) else ""
+        model_name = self.BOQ_IMAGE_MODEL_MAP.get(
+            m_key_lower,
+            model_key if model_key in ("GEM_PIX_2", "NARWHAL", "HARBOR_SEAL", "IMAGEN_3_5", "IMAGEN_3", "IMAGEN_3_FAST") else "GEM_PIX_2"
+        )
         ar_code = self.BOQ_ASPECT_RATIO_MAP.get(aspect_ratio, 3)
 
         # Preflight session to match Google Flow Angular frontend (nzlxg)
@@ -947,9 +995,11 @@ class BridgeFlowClient(FlowClient):
         ]
         prompt_arr = [[[prompt]]]
 
-        # Build 4 candidates matching Google Flow Angular frontend batch format (docs/flow.google.com.update1.har)
+        # Build candidates matching Google Flow Angular frontend batch format
+        # RedOne processes 1 image per task item, so we generate 1 candidate by default.
         candidates = []
-        for i in range(4):
+        count = max(1, min(candidate_count, 4))
+        for i in range(count):
             c_seed = seed if i == 0 else _rand.randint(100000000, 2147483647)
             c_batch = batch_uuid if i == 0 else str(_uuid.uuid4()).upper()
             c_op = op_uuid if i == 0 else str(_uuid.uuid4()).upper()
@@ -1283,8 +1333,10 @@ class BridgeFlowClient(FlowClient):
                     ref_media_ids.append(r_str)
 
         # 1. Resolve reference image and end image to media_id via maseQ RPC
-        actual_ref = ref_image_path if (ref_image_path and Path(str(ref_image_path)).exists()) else (
-            reference_image if (reference_image and Path(str(reference_image)).exists()) else reference_image
+        actual_ref = (
+            reference_image
+            if (reference_image and not Path(str(reference_image)).exists())
+            else (ref_image_path if (ref_image_path and Path(str(ref_image_path)).exists()) else reference_image)
         )
         if actual_ref and Path(str(actual_ref)).exists():
             try:

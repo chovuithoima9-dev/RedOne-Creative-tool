@@ -38,8 +38,8 @@ FLOW_RPCS = {
 # ── 2. Model Mappings ─────────────────────────────────────────────────────────
 
 IMAGE_MODELS = {
-    "nano_banana_pro": "HARBOR_SEAL",
-    "nano_banana_2": "HARBOR_SEAL",
+    "nano_banana_pro": "GEM_PIX_2",
+    "nano_banana_2": "NARWHAL",
     "nano_banana_lite": "HARBOR_SEAL",
     "nano_banana_2_lite": "HARBOR_SEAL",
     "gem_pix_2": "GEM_PIX_2",
@@ -117,7 +117,7 @@ def build_image_generate_payload(
     model_name: str = "GEM_PIX_2",
     aspect_ratio: str = "16:9",
     reference_image_ids: Optional[List[str]] = None,
-    candidate_count: int = 4,
+    candidate_count: int = 1,
     captcha_token: str = RECAPTCHA_PLACEHOLDER,
     batch_uuid: Optional[str] = None,
 ) -> list:

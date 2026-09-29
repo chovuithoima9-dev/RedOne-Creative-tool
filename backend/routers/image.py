@@ -199,7 +199,7 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             prompt=item["prompt"],
             model_key=model,
             aspect_ratio=aspect,
-            reference_images=ref_paths or ref_media_ids or None,
+            reference_images=ref_media_ids or ref_paths or None,
         )
 
         out_dir = get_save_dir("image", task_id, task.get("name"))
