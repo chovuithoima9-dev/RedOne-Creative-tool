@@ -366,7 +366,7 @@ async def _process_image_task(task_id: int):
 
             async def _staggered_item(idx: int, it: dict):
                 if idx > 0:
-                    await asyncio.sleep(idx * 1.5)
+                    await asyncio.sleep(idx * 2.0)
                 return await run_item_bounded(it, generate_image_item(client, task, it))
 
             batch_results = await asyncio.gather(

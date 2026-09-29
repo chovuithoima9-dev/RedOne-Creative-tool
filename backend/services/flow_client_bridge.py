@@ -1044,6 +1044,12 @@ class BridgeFlowClient(FlowClient):
                 if "QUOTA_REACHED" in str(err) or "PER_MODEL_DAILY_QUOTA" in str(err):
                     raise ValueError(f"Google RPC error: {err}")
                 if attempt < 4:
+                    import random as _rnd
+                    # If throttled by Google, wait with backoff so the burst limiter window passes
+                    base_delay = 4.0 if ("THROTTLED" in str(err) or "[8" in str(err)) else 2.0
+                    wait_time = base_delay * (attempt + 1) + _rnd.uniform(1.0, 2.5)
+                    log.info(f"[{self._account_email}] Throttled / RPC error on attempt {attempt + 1}. Backing off for {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
                     continue
                 raise ValueError(f"Google RPC error: {err}")
 
@@ -1449,7 +1455,8 @@ class BridgeFlowClient(FlowClient):
 
             if err or status != 200 or not rpc_result:
                 log.error(f"(BOQ) {rpc_id} failed (attempt {attempt + 1}): status={status}, err={err}")
-                if attempt < 2 and (not err or "UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err)):
+                if attempt < 2 and (not err or "UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "THROTTLED" in str(err) or "[8" in str(err)):
+                    await asyncio.sleep(4.0 * (attempt + 1))
                     continue
                 raise ValueError(f"Tạo video thất bại: {err or f'HTTP {status}'}")
 

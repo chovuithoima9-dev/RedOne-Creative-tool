@@ -46,20 +46,20 @@ def friendly_error(raw: str) -> str:
     # failed" — so it ALSO contains "429"/"resource_exhausted". It must NOT be
     # labeled "hết quota hôm nay": it's temporary and the tool auto-retries.
     if has("recaptcha", "captcha", "unusual_activity", "unusual activity",
-           "unusual traffic", "too_much_traffic", "too much traffic", "[7]", "error: [7]"):
+           "unusual traffic", "too_much_traffic", "too much traffic",
+           "user_requests_throttled", "throttled", "throttle",
+           "rate_limit", "rate limit", "[7]", "error: [7]"):
         return (
-            "Google tạm chặn vì gửi quá nhiều/quá nhanh (nghi là bot — "
-            "reCAPTCHA). Đây là lỗi TẠM THỜI, tool sẽ tự thử lại sau ít giây. "
-            "Nếu bị liên tục: giảm số luồng song song, tăng 'Đợi giữa các đợt "
-            "gen' trong Cài đặt, nghỉ vài phút, hoặc đổi tài khoản Google ở "
-            "tab Tài Khoản."
+            "Google tạm nghẽn vì gửi yêu cầu quá nhanh liên tục trong thời gian ngắn (Rate Limit / Throttled). "
+            "Đây là lỗi TẠM THỜI (không phải hết quota ngày). Tool sẽ tự giãn cách, "
+            "hoặc bạn chỉ cần bấm 'Gen lại' sau vài giây là sẽ thành công."
         )
 
     # ── Daily quota exhausted (free Labs Flow per-model daily cap) ──
     # Reached only when the 429 is NOT the transient throttle above — i.e. a
     # genuine per-model daily limit. Resets the next day.
-    if has("per_model_daily_quota", "daily", "resource_exhausted", "quota",
-           "429", "resource has been exhausted", "[8]", "error: [8]"):
+    if has("per_model_daily_quota", "daily", "quota", "quota_reached",
+           "resource has been exhausted"):
         return (
             "Tài khoản này đã hết lượt tạo miễn phí trong hôm nay (Google "
             "giới hạn quota theo ngày). Đổi sang tài khoản Google khác ở tab "
