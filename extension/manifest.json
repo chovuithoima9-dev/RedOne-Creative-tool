@@ -3,7 +3,7 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0pnSG7MepMRidta+5wggetF2rugHTWUzjfOpQ6JjAYemEOa5hYS8MxqzhpQJE75Fht5evTH4yiUdncWt1ImmVqOsAySj+gj3hushbKbu+wTFY7ISU5E/FkwpYPRfDd2E3apaOMrVD6adHejQTlwhAyYLsohmto0GdvfT1tDBqIwE+hUoB3fUzzhn3hvI6f3h7NFtbd5IFX3qYc2kL/6f/VWSD7hRlN3N+7I6NJiDmqUPDDo8lrNmFIrQugLcke34Uv2+zASRpl19jYmnuluXz6pTXcPvT5ouObHFF4gKQVtT/lpJziaJ3ghuJnqjPXbRhWVnqomHD60goeFDuXXLOQIDAQAB",
   "name": "__MSG_appName__",
   "description": "__MSG_appDescription__",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "default_locale": "vi",
   "permissions": [
     "alarms",

@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 SERVER_PORT = 8000
 
 # GitHub repo for auto-update check (releases API)
