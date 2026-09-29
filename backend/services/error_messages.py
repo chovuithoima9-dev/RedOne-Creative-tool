@@ -50,9 +50,7 @@ def friendly_error(raw: str) -> str:
            "user_requests_throttled", "throttled", "throttle",
            "rate_limit", "rate limit", "[7]", "error: [7]"):
         return (
-            "Google tạm nghẽn vì gửi yêu cầu quá nhanh liên tục trong thời gian ngắn (Rate Limit / Throttled). "
-            "Đây là lỗi TẠM THỜI (không phải hết quota ngày). Tool sẽ tự giãn cách, "
-            "hoặc bạn chỉ cần bấm 'Gen lại' sau vài giây là sẽ thành công."
+            "Google tạm nghẽn vì gửi yêu cầu quá nhanh liên tục trong thời gian ngắn (Rate Limit / Throttled)."
         )
 
     # ── Daily quota exhausted (free Labs Flow per-model daily cap) ──
