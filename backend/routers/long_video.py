@@ -32,14 +32,35 @@ class LongVideoRequest(BaseModel):
     duration: int = 8                # per-scene duration: 4|6|8 (10 for omni_flash)
     start_image_path: Optional[str] = None
     task_name: Optional[str] = None
+    flow_account_email: Optional[str] = None
 
 
 _active_jobs: dict[int, asyncio.Task] = {}
 
 
-def _pick_account() -> Optional[dict]:
-    """Pick the active Google Flow account currently opened in the Chrome tab first,
-    otherwise fallback to the account with the highest credit in the database."""
+def _pick_account(target_email: Optional[str] = None) -> Optional[dict]:
+    """Pick target Flow account if specified, otherwise the active tab account,
+    otherwise highest credit in DB."""
+    if target_email:
+        clean = target_email.strip().lower()
+        acc = db.get_account_by_email(clean)
+        if acc:
+            if not acc.get("enabled"):
+                try:
+                    db.update_account(acc["id"], enabled=1)
+                    acc["enabled"] = 1
+                except Exception:
+                    pass
+            return acc
+        else:
+            try:
+                acc_id = db.add_account(clean)
+                new_acc = db.get_account(acc_id)
+                if new_acc:
+                    return new_acc
+            except Exception:
+                pass
+
     from ..services.browser_bridge import bridge
     active_email = bridge.get_active_account_email()
     if active_email:
@@ -84,7 +105,7 @@ async def _run_long_video(task_id: int):
     db.update_task(task_id, status=TaskStatus.RUNNING.value)
     await hub.broadcast("task_started", {"task_id": task_id})
 
-    acc = _pick_account()
+    acc = _pick_account(task.get("flow_account_email"))
     if not acc:
         db.update_task(task_id, status=TaskStatus.ERROR.value)
         await hub.broadcast("task_error", {"task_id": task_id, "error": "Không có account"})
@@ -247,6 +268,7 @@ async def start_long_video(body: LongVideoRequest):
     if len(body.prompts) > 20:
         raise HTTPException(400, "Tối đa 20 prompts")
     task_name = (body.task_name or "").strip() or f"long_video_{int(time.time())}"
+    flow_acc = body.flow_account_email.strip().lower() if body.flow_account_email else None
     safe_duration = clamp_duration(body.quality, body.duration)
     from ..services import hub_client
     task_id = db.create_task(
@@ -258,18 +280,20 @@ async def start_long_video(body: LongVideoRequest):
         total_count=len(body.prompts),
         status=TaskStatus.PENDING.value,
         user_email=hub_client.current_user_email(),
+        flow_account_email=flow_acc,
     )
     for i, p in enumerate(body.prompts):
         extra = {}
         if i == 0 and body.start_image_path:
             extra["start_image"] = body.start_image_path
         db.add_task_item(task_id, p, extra=extra or None)
-    position = await queue.enqueue("long_video", task_id, _run_long_video)
+    position = await queue.enqueue("long_video", task_id, _run_long_video, flow_account_email=flow_acc)
     return {
         "task_id": task_id,
         "scenes": len(body.prompts),
         "queue_position": position,
         "queued": position > 0,
+        "flow_account_email": flow_acc,
     }
 
 

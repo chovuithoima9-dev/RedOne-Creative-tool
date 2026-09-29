@@ -281,6 +281,35 @@ async function refreshShakkerPower() {
   }
 }
 
+function setupFlowAccountSync() {
+  window.addEventListener('message', (ev) => {
+    if (!ev.data || ev.data.source !== 'REDONE_AUTH_HELPER') return;
+    if (ev.data.type === 'FLOW_ACCOUNT_DETECTED') {
+      const acc = ev.data.data || {};
+      window.currentFlowAccount = acc;
+      const elAccount = $('#topbar-flow-account');
+      const elChip = $('#topbar-flow-account-chip');
+      if (elAccount) {
+        if (acc.email) {
+          elAccount.textContent = acc.email;
+          elAccount.title = `Flow: ${acc.email} (${acc.tier || 'FREE'})`;
+          if (elChip) elChip.style.display = '';
+        } else if (acc.hasTab) {
+          elAccount.textContent = 'Chưa đăng nhập Flow';
+          elAccount.title = 'Đã mở tab Google Flow nhưng chưa đăng nhập';
+        } else {
+          elAccount.textContent = 'Chưa mở tab Flow';
+          elAccount.title = 'Vui lòng mở tab flow.google.com trên profile Chrome này';
+        }
+      }
+      window.dispatchEvent(new CustomEvent('flow_account_changed', { detail: acc }));
+    }
+  });
+
+  // Request immediate account update on load
+  window.postMessage({ type: 'REDONE_REQUEST_FLOW_ACCOUNT' }, '*');
+}
+
 async function loadSettings() {
   try {
     const data = await api.settings.get();
@@ -885,6 +914,7 @@ async function init() {
   // a slow/offline catalog never delays boot (backend falls back instantly).
   initFeatures();
   setupWS();
+  setupFlowAccountSync();
 
   // First-run setup wizard. Blocks the rest of init() until the user
   // completes (or the backend reports everything is already in place).
@@ -944,4 +974,12 @@ if (document.readyState === 'loading') {
   init();
 }
 
-window.__app = { store, navigate, refreshAccounts, refreshShakkerPower, refreshHubStatus, refreshFeatureNav: renderFeatureNav };
+window.__app = {
+  store,
+  navigate,
+  refreshAccounts,
+  refreshShakkerPower,
+  refreshHubStatus,
+  refreshFeatureNav: renderFeatureNav,
+  get currentFlowAccount() { return window.currentFlowAccount || null; },
+};

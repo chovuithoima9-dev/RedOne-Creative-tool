@@ -27,14 +27,35 @@ class StartImageRequest(BaseModel):
     concurrent: int = 1                 # số luồng song song
     reference_image_paths: Optional[list[str]] = None  # already uploaded
     task_name: Optional[str] = None
+    flow_account_email: Optional[str] = None
 
 
 _active_tasks: dict[int, asyncio.Task] = {}
 
 
-def _pick_account() -> Optional[dict]:
-    """Pick the active Google Flow account currently opened in the Chrome tab first,
-    otherwise fallback to the account with the highest credit in the database."""
+def _pick_account(target_email: Optional[str] = None) -> Optional[dict]:
+    """Pick target Flow account if specified, otherwise the active tab account,
+    otherwise the highest-credit account in DB."""
+    if target_email:
+        clean = target_email.strip().lower()
+        acc = db.get_account_by_email(clean)
+        if acc:
+            if not acc.get("enabled"):
+                try:
+                    db.update_account(acc["id"], enabled=1)
+                    acc["enabled"] = 1
+                except Exception:
+                    pass
+            return acc
+        else:
+            try:
+                acc_id = db.add_account(clean)
+                new_acc = db.get_account(acc_id)
+                if new_acc:
+                    return new_acc
+            except Exception:
+                pass
+
     from ..services.browser_bridge import bridge
     active_email = bridge.get_active_account_email()
     if active_email:
@@ -68,9 +89,6 @@ def _pick_account() -> Optional[dict]:
 
         accounts.sort(key=lambda a: (_tier_score(a.get("tier")), a.get("credit") or 0), reverse=True)
         return accounts[0]
-    # Vertex AI uses the baked service account — no Google login needed. On a
-    # fresh machine with no accounts, return a synthetic one so gen proceeds.
-    # Other modes (extension/playwright) still require a real account.
     from ..services.flow_factory import is_vertex_mode, synthetic_vertex_account
     if is_vertex_mode():
         return synthetic_vertex_account()
@@ -313,7 +331,7 @@ async def _process_image_task(task_id: int):
     db.update_task(task_id, status=TaskStatus.RUNNING.value, started_at=str(time.time()))
     await hub.broadcast("task_started", {"task_id": task_id, "kind": "image"})
 
-    acc = _pick_account()
+    acc = _pick_account(task.get("flow_account_email"))
     if not acc:
         db.update_task(task_id, status=TaskStatus.ERROR.value)
         await hub.broadcast("task_error", {"task_id": task_id, "error": "Không có account khả dụng"})
@@ -434,6 +452,7 @@ async def start_image_task(body: StartImageRequest):
             expanded.append(p)
 
     task_name = (body.task_name or "").strip() or f"image_{int(time.time())}"
+    flow_acc = body.flow_account_email.strip().lower() if body.flow_account_email else None
     from ..services import hub_client
     task_id = db.create_task(
         name=task_name,
@@ -444,17 +463,19 @@ async def start_image_task(body: StartImageRequest):
         total_count=len(expanded),
         status=TaskStatus.PENDING.value,
         user_email=hub_client.current_user_email(),
+        flow_account_email=flow_acc,
     )
     extra_global = {"reference_images": body.reference_image_paths} if body.reference_image_paths else None
     for p in expanded:
         db.add_task_item(task_id, p, extra=extra_global)
 
-    position = await queue.enqueue("image", task_id, _process_image_task)
+    position = await queue.enqueue("image", task_id, _process_image_task, flow_account_email=flow_acc)
     return {
         "task_id": task_id,
         "items": len(expanded),
         "queue_position": position,
         "queued": position > 0,
+        "flow_account_email": flow_acc,
     }
 
 
@@ -650,7 +671,7 @@ async def _process_upscale_task(task_id: int):
         "resolution": resolution, "task_id": task_id,
     })
 
-    acc = _pick_account()
+    acc = _pick_account(task.get("flow_account_email"))
     if not acc:
         db.update_task(task_id, status=TaskStatus.ERROR.value)
         await hub.broadcast("task_error", {"task_id": task_id, "error": "Không có account khả dụng"})
@@ -720,7 +741,7 @@ async def upscale_existing(item_id: int, resolution: str = "4k"):
             "cần generate lại để dùng tính năng upscale."
         )
 
-    acc = _pick_account()
+    acc = _pick_account(task.get("flow_account_email"))
     if not acc:
         raise HTTPException(400, "Không có account khả dụng")
     client = None
@@ -797,6 +818,7 @@ async def upscale_batch(body: UpscaleBatchRequest):
     # (Batches are normally from one gen task; fall back to a generic name if the
     # source task has no name.)
     _src_name = (resolved[0][0].get("name") or "").strip()
+    src_flow_acc = resolved[0][0].get("flow_account_email")
     task_name = f"{_src_name}_upscale {res.upper()}" if _src_name else f"Upscale {res.upper()} ({len(resolved)} ảnh)"
     task_id = db.create_task(
         name=task_name,
@@ -811,6 +833,7 @@ async def upscale_batch(body: UpscaleBatchRequest):
             "parent_task_id": resolved[0][0]["id"],   # task gốc → lồng cha-con trong Quản lý task
         }),
         user_email=hub_client.current_user_email(),
+        flow_account_email=src_flow_acc,
     )
     for (src_task, item, mid) in resolved:
         db.add_task_item(task_id, f"Upscale {res.upper()}", extra={
@@ -821,7 +844,7 @@ async def upscale_batch(body: UpscaleBatchRequest):
             "src_task_name": src_task.get("name"),
         })
 
-    position = await queue.enqueue("image", task_id, _process_upscale_task)
+    position = await queue.enqueue("image", task_id, _process_upscale_task, flow_account_email=src_flow_acc)
     return {
         "ok": True,
         "task_id": task_id,

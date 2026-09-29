@@ -278,6 +278,7 @@ export function renderLongVideo(root) {
     form.duration = parseInt(root.querySelector('#lv-duration').value || '8', 10);
     setLoading(startBtn, true);
     try {
+      const targetFlowEmail = window.currentFlowAccount?.email || null;
       const res = await api.longVideo.start({
         prompts,
         quality: form.quality,
@@ -285,11 +286,13 @@ export function renderLongVideo(root) {
         duration: form.duration,
         start_image_path: form.startImagePath,
         task_name: (() => { let n = (form.taskName || '').trim(); if (!n) { n = defaultTaskName(); nameInput.value = n; } return n; })(),
+        flow_account_email: targetFlowEmail,
       });
       tasksStore.register(res.task_id, 'long_video', {
         items: prompts,
         aspect: form.aspect,
         model: form.quality,
+        flow_account_email: res.flow_account_email || targetFlowEmail,
       });
       attachToTask(res.task_id);
       toast(`Đã tạo task #${res.task_id}`, 'success');
@@ -480,6 +483,9 @@ export function renderLongVideo(root) {
     } else if (taskState.status === 'cancelled') {
       statusText = 'Đã hủy';
       cancelBtn.classList.add('hidden');
+    }
+    if (taskState.flow_account_email) {
+      statusText += ` • Flow: ${taskState.flow_account_email}`;
     }
     root.querySelector('#lv-status').textContent = statusText;
   }

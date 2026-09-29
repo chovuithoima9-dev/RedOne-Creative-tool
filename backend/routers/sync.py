@@ -249,10 +249,10 @@ async def next_task(
             return envelope({"task": None, "session_commands": commands})
         return {"task": None}
 
-    # Pass tab_status so the bridge only hands tasks to a "ready" instance
-    # (signed-in labs.google tab). Lets the extension run in multiple Chrome
-    # profiles — the ones without the tab poll harmlessly and claim nothing.
-    task = await bridge.pop_task_for_extension(timeout=0.0, tab_status=tab_status)
+    # Pass tab_status and tab_email so the bridge only hands tasks to a "ready" instance
+    # belonging to the target account. Lets the extension run in multiple Chrome
+    # profiles without collision or cross-account task execution.
+    task = await bridge.pop_task_for_extension(timeout=0.0, tab_status=tab_status, tab_email=tab_email)
     if task is None:
         if commands:
             return envelope({"task": None, "session_commands": commands})

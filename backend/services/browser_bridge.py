@@ -135,6 +135,7 @@ class _BridgeTask:
     id: str = field(compare=False)
     kind: str = field(compare=False)  # "recaptcha" | "proxy_fetch"
     payload: dict = field(compare=False)
+    target_account_email: Optional[str] = field(default=None, compare=False)
     created_at: float = field(default_factory=time.time, compare=False)
     future: asyncio.Future = field(
         default_factory=lambda: asyncio.get_event_loop().create_future(),
@@ -158,23 +159,22 @@ class BrowserBridge:
     """
 
     def __init__(self):
-        # Pending = waiting for extension to claim. PriorityQueue pops the
-        # task with the smallest sort_key first (regen < upscale < gen <
-        # misc); ties break FIFO via the per-put `enq` counter.
-        self._pending: asyncio.PriorityQueue[_BridgeTask] = asyncio.PriorityQueue()
+        # Pending = list of tasks ordered by sort_key. Protected by _pending_lock.
+        # Allows matching tasks by target_account_email when multiple extension profiles poll.
+        self._pending: list[_BridgeTask] = []
+        self._pending_lock = asyncio.Lock()
         # In-flight = claimed by extension, awaiting result.
         self._in_flight: dict[str, _BridgeTask] = {}
         # Extension liveness tracking
         self._ext_last_poll: float = 0.0
-        # Last time ANY instance reported a signed-in labs.google tab. With the
-        # extension installed in several Chrome profiles (all polling the same
-        # localhost backend), only the profile holding the tab reports "ready".
         self._ext_last_ready_poll: float = 0.0
         self._ext_last_status: str = "unknown"  # "ready" | "no_tab" | "no_login" | "unknown"
         self._ext_last_url: str = ""
         self._ext_last_email: str = ""
         self._ext_last_tier: str = "FREE"
         self._ext_last_credits: Optional[int] = None
+        # Multi-account extension tracking: email -> {last_seen, status, url, tier, credits}
+        self._connected_accounts: dict[str, dict] = {}
         # Server-driven session commands — queued by backend, consumed by
         # extension on next poll. Commands: clear_cookies, reload_tab,
         # navigate_toggle, delay.
@@ -195,13 +195,15 @@ class BrowserBridge:
         Chrome profiles poll concurrently."""
         now = time.time()
         self._ext_last_poll = now
+        clean_email = email.strip().lower() if email else ""
+
         if status == "ready":
             self._ext_last_ready_poll = now
             self._ext_last_status = "ready"
             if url:
                 self._ext_last_url = url
-            if email:
-                self._ext_last_email = email.strip().lower()
+            if clean_email:
+                self._ext_last_email = clean_email
             if tier:
                 self._ext_last_tier = tier.strip().upper()
             if credits is not None:
@@ -216,6 +218,20 @@ class BrowserBridge:
                 self._ext_last_email = None
                 self._ext_last_tier = None
                 self._ext_last_credits = None
+
+        if clean_email:
+            self._connected_accounts[clean_email] = {
+                "last_seen": now,
+                "status": status,
+                "url": url,
+                "tier": (tier or "FREE").strip().upper(),
+                "credits": credits,
+            }
+
+        # Prune accounts not seen in > 120s
+        expired = [em for em, d in self._connected_accounts.items() if (now - d["last_seen"]) > 120.0]
+        for em in expired:
+            self._connected_accounts.pop(em, None)
 
     def get_active_account_email(self) -> Optional[str]:
         """Return the Google account email detected from the active Flow tab, if any."""
@@ -261,12 +277,31 @@ class BrowserBridge:
     def is_extension_live(self) -> bool:
         return (time.time() - self._ext_last_poll) < EXT_LIVE_THRESHOLD_S
 
-    def is_ready_extension_live(self) -> bool:
+    def is_ready_extension_live(self, account_email: Optional[str] = None) -> bool:
         """True if an instance WITH a signed-in labs.google tab polled recently.
-        Distinguishes 'an extension is connected' from 'an extension that can
-        actually run Flow tasks is connected' — needed when the extension is
-        loaded in multiple profiles and only one holds the labs.google tab."""
-        return (time.time() - self._ext_last_ready_poll) < EXT_LIVE_THRESHOLD_S
+        If account_email is specified, checks if the extension for THAT account is live."""
+        now = time.time()
+        if account_email:
+            clean = account_email.strip().lower()
+            data = self._connected_accounts.get(clean)
+            if data and (now - data["last_seen"]) < EXT_LIVE_THRESHOLD_S and data["status"] == "ready":
+                return True
+            return False
+        return (now - self._ext_last_ready_poll) < EXT_LIVE_THRESHOLD_S
+
+    def get_connected_flow_accounts(self) -> list[dict]:
+        """Return all currently active Flow accounts reported by extensions across profiles."""
+        now = time.time()
+        res = []
+        for em, data in self._connected_accounts.items():
+            if (now - data["last_seen"]) < EXT_LIVE_THRESHOLD_S and data["status"] == "ready":
+                res.append({
+                    "email": em,
+                    "tier": data.get("tier", "FREE"),
+                    "credits": data.get("credits"),
+                    "url": data.get("url", ""),
+                })
+        return res
 
     def snapshot_state(self) -> dict:
         return {
@@ -278,7 +313,8 @@ class BrowserBridge:
             "last_tab_email": self._ext_last_email,
             "last_tab_tier": self._ext_last_tier,
             "last_tab_credits": self._ext_last_credits,
-            "pending_tasks": self._pending.qsize(),
+            "connected_accounts": self.get_connected_flow_accounts(),
+            "pending_tasks": len(self._pending),
             "in_flight_tasks": len(self._in_flight),
             "pending_session_commands": len(self._session_commands),
         }
@@ -312,41 +348,46 @@ class BrowserBridge:
     # ── Extension-facing (called from routers/sync.py) ──────────────
 
     async def pop_task_for_extension(self, timeout: float = 0.0,
-                                     tab_status: str = "ready") -> Optional[_BridgeTask]:
-        """Extension polls; we hand it the next pending task, or None.
+                                     tab_status: str = "ready",
+                                     tab_email: str = "") -> Optional[_BridgeTask]:
+        """Extension polls; we hand it the next pending task matching its account, or None.
 
         `timeout=0.0` returns immediately if queue is empty (matches the
         extension's short-poll model).
 
         CAPABILITY GATE: only an instance reporting `tab_status == "ready"`
-        (a signed-in labs.google tab) may claim a task. The extension can be
-        installed in MULTIPLE Chrome profiles — every profile's service worker
-        polls this SAME localhost backend. A profile without a labs.google tab
-        reports "no_tab"/"no_login"; if it claimed a task it would fail
-        mid-flight with "no labs.google tab". Returning None leaves the task
-        queued for the profile that actually holds the tab. This is what lets
-        the extension live in several profiles without errors.
+        (a signed-in labs.google tab) may claim a task.
+        ACCOUNT ROUTING: if task.target_account_email is set, ONLY an extension
+        reporting the same tab_email can claim this task.
         """
         if tab_status and tab_status != "ready":
             return None
-        try:
-            if timeout > 0:
-                task = await asyncio.wait_for(self._pending.get(), timeout=timeout)
-            else:
-                task = self._pending.get_nowait()
-        except (asyncio.TimeoutError, asyncio.QueueEmpty):
-            return None
-        # Skip expired tasks (shouldn't happen because awaiters drop them
-        # via cancellation, but defensive).
-        while task.is_expired():
-            try:
-                task = self._pending.get_nowait()
-            except asyncio.QueueEmpty:
+
+        clean_tab_email = tab_email.strip().lower() if tab_email else ""
+
+        async with self._pending_lock:
+            # Purge expired tasks
+            self._pending = [t for t in self._pending if not t.is_expired()]
+
+            chosen_idx = None
+            for idx, task in enumerate(self._pending):
+                target = (task.target_account_email or "").strip().lower()
+                if not target:
+                    # Generic task: any ready extension can take it
+                    chosen_idx = idx
+                    break
+                if clean_tab_email and target == clean_tab_email:
+                    # Account match: this extension belongs to the target Flow account
+                    chosen_idx = idx
+                    break
+
+            if chosen_idx is None:
                 return None
-        self._in_flight[task.id] = task
-        # Starts the execution clock for the awaiter in _enqueue_and_wait.
-        task.claimed.set()
-        return task
+
+            task = self._pending.pop(chosen_idx)
+            self._in_flight[task.id] = task
+            task.claimed.set()
+            return task
 
     def deliver_result(self, task_id: str, result: dict) -> bool:
         """Resolve the Future for the task. Returns True if delivered,
@@ -360,26 +401,30 @@ class BrowserBridge:
 
     # ── Public API (called from FlowClient / routers) ───────────────
 
-    async def _enqueue_and_wait(self, kind: str, payload: dict) -> dict:
+    async def _enqueue_and_wait(
+        self,
+        kind: str,
+        payload: dict,
+        target_account_email: Optional[str] = None,
+    ) -> dict:
         """Common enqueue+await flow shared by all task kinds.
 
         Fails fast with BridgeExtensionOfflineError if the extension
         hasn't polled recently — saves the caller waiting TTL_S for a
         task that no one will pick up.
         """
+        clean_target = target_account_email.strip().lower() if target_account_email else None
+
         if not self.is_extension_live():
             raise BridgeExtensionOfflineError(
                 "Extension chưa kết nối. Mở Chrome có cài 'RedOne Auth Helper' "
                 "+ tab flow.google.com đã đăng nhập."
             )
-        # An extension is polling, but does any instance actually hold a
-        # signed-in flow.google.com tab? If not — and nothing is mid-flight (which
-        # would mean a ready instance is just busy) — fail fast with a clear
-        # message instead of letting the task sit unclaimed until TASK_TTL_S.
-        if not self.is_ready_extension_live() and not self._in_flight:
+        if not self.is_ready_extension_live(clean_target) and not self._in_flight:
+            target_desc = f" cho tài khoản {clean_target}" if clean_target else ""
             raise BridgeExtensionOfflineError(
-                "Đã thấy extension nhưng CHƯA có tab Flow đã đăng nhập. "
-                "Trong Chrome (profile có 'RedOne Auth Helper'): mở tab "
+                f"Đã thấy extension nhưng CHƯA có tab Flow{target_desc} đã đăng nhập. "
+                "Trong Chrome (profile tương ứng có 'RedOne Auth Helper'): mở tab "
                 "https://flow.google.com, đăng nhập, ghim tab, rồi gen lại."
             )
         klass, seq = _gen_priority.get()
@@ -389,59 +434,62 @@ class BrowserBridge:
             id=uuid.uuid4().hex,
             kind=kind,
             payload=payload,
+            target_account_email=clean_target,
         )
-        await self._pending.put(task)
 
-        # Phase 1 — wait to be CLAIMED. The extension runs one task at a time,
-        # so queueing behind other downloads is normal and must NOT eat the
-        # execution budget. Poll in slices so a Chrome that closes mid-queue
-        # fails fast instead of parking the caller for the whole window.
+        async with self._pending_lock:
+            self._pending.append(task)
+            self._pending.sort(key=lambda t: t.sort_key)
+
         queue_deadline = time.time() + QUEUE_TTL_S
-        while not task.claimed.is_set():
-            # A busy extension can't poll (see EXT_LIVE_THRESHOLD_S), so a
-            # stale heartbeat only means "dead" when nothing is in flight.
-            if not self.is_extension_live() and not self._in_flight:
-                raise BridgeExtensionOfflineError(
-                    f"Extension ngắt kết nối khi task {kind} còn đang xếp hàng. "
-                    "Mở lại Chrome có 'RedOne Auth Helper' + tab flow.google.com "
-                    "đã đăng nhập, rồi thử lại."
-                )
-            remaining = queue_deadline - time.time()
-            if remaining <= 0:
-                raise BridgeTimeoutError(
-                    f"Không extension nào nhận task {kind} sau {QUEUE_TTL_S}s "
-                    f"({self._pending.qsize()} task còn xếp hàng)"
-                )
-            try:
-                await asyncio.wait_for(task.claimed.wait(), timeout=min(remaining, 5.0))
-            except asyncio.TimeoutError:
-                pass
-
-        # Phase 2 — claimed, so now it gets the full execution budget.
         try:
+            while not task.claimed.is_set():
+                if not self.is_extension_live() and not self._in_flight:
+                    raise BridgeExtensionOfflineError(
+                        f"Extension ngắt kết nối khi task {kind} còn đang xếp hàng. "
+                        "Mở lại Chrome có 'RedOne Auth Helper' + tab flow.google.com "
+                        "đã đăng nhập, rồi thử lại."
+                    )
+                remaining = queue_deadline - time.time()
+                if remaining <= 0:
+                    raise BridgeTimeoutError(
+                        f"Không extension nào nhận task {kind} sau {QUEUE_TTL_S}s "
+                        f"({len(self._pending)} task còn xếp hàng)"
+                    )
+                try:
+                    await asyncio.wait_for(task.claimed.wait(), timeout=min(remaining, 5.0))
+                except asyncio.TimeoutError:
+                    pass
+
+            # Phase 2 — claimed, so now it gets the full execution budget.
             return await asyncio.wait_for(task.future, timeout=TASK_TTL_S)
         except asyncio.TimeoutError:
-            # Drop from in_flight if it got claimed but never returned
             self._in_flight.pop(task.id, None)
             raise BridgeTimeoutError(
                 f"Extension đã nhận task {kind} nhưng không trả kết quả "
                 f"sau {TASK_TTL_S}s"
             )
+        finally:
+            if not task.claimed.is_set():
+                async with self._pending_lock:
+                    self._pending = [t for t in self._pending if t.id != task.id]
 
     async def harvest_recaptcha(
         self,
         site_key: str = "",
         action: str = "VIDEO_GENERATION",
+        account_email: Optional[str] = None,
     ) -> str:
         """Ask the extension to harvest a fresh reCAPTCHA token from a
         labs.google tab. site_key="" → extension auto-discovers it.
 
         Returns the token string. Raises if extension errors out.
         """
-        result = await self._enqueue_and_wait("recaptcha", {
-            "site_key": site_key,
-            "action": action,
-        })
+        result = await self._enqueue_and_wait(
+            "recaptcha",
+            {"site_key": site_key, "action": action},
+            target_account_email=account_email,
+        )
         token = result.get("token")
         if not token:
             err = result.get("error") or "unknown error"
@@ -456,20 +504,11 @@ class BrowserBridge:
         body: Optional[str] = None,
         response_mode: str = "json",   # "json" | "text" | "arraybuffer"
         timeout_ms: int = 60000,
+        account_email: Optional[str] = None,
     ) -> dict:
         """Run a fetch from inside the user's labs.google tab. The
         request carries the user's session cookies automatically
-        (`credentials: "include"` on the JS side).
-
-        Returns a dict:
-            {
-              "status": int,
-              "headers": dict,
-              "body": <parsed JSON or text>,
-              # If response_mode="arraybuffer": "body_b64" instead of "body"
-              "error": str | None,
-            }
-        """
+        (`credentials: "include"` on the JS side)."""
         payload = {
             "url": url,
             "method": method,
@@ -478,16 +517,23 @@ class BrowserBridge:
             "response_mode": response_mode,
             "timeout_ms": timeout_ms,
         }
-        result = await self._enqueue_and_wait("proxy_fetch", payload)
-        return result
+        return await self._enqueue_and_wait(
+            "proxy_fetch",
+            payload,
+            target_account_email=account_email,
+        )
 
-    async def get_cookies(self, domains: list[str]) -> dict:
-        """Ask the extension to read the user's Chrome cookies for `domains`
-        (via the chrome.cookies API → already decrypted, no DB-copy problem).
-        Used to auto-feed yt-dlp YouTube auth. Returns
-        {"cookies": [{domain,name,value,path,secure,hostOnly,expirationDate}], "count": N}.
-        """
-        return await self._enqueue_and_wait("get_cookies", {"domains": domains})
+    async def get_cookies(
+        self,
+        domains: list[str],
+        account_email: Optional[str] = None,
+    ) -> dict:
+        """Ask the extension to read the user's Chrome cookies for `domains`."""
+        return await self._enqueue_and_wait(
+            "get_cookies",
+            {"domains": domains},
+            target_account_email=account_email,
+        )
 
     async def batch_execute(
         self,
@@ -496,31 +542,9 @@ class BrowserBridge:
         source_path: str = "/",
         timeout_ms: int = 120000,
         recaptcha_action: str = "",
+        account_email: Optional[str] = None,
     ) -> dict:
-        """Execute a BOQ/WIZ batchexecute RPC from inside the user's
-        flow.google.com tab.
-
-        Google migrated Flow's API from aisandbox-pa REST (Bearer token)
-        to batchexecute RPC (cookie auth + CSRF token). This method sends
-        the RPC through the extension, which injects it into the tab
-        where the browser automatically attaches Google auth cookies.
-
-        When ``recaptcha_action`` is set (e.g. "IMAGE_GENERATION"),
-        the extension mints the reCAPTCHA token **inline** inside the
-        same ``executeScript`` call that sends the request — keeping
-        token + fetch in one execution context, which prevents Google's
-        UNUSUAL_ACTIVITY detection.
-
-        Args:
-            rpc_id: The WIZ RPC ID (e.g. "ogiZ0b" for image gen)
-            inner_payload: The inner payload (Python value, will be JSON-serialized)
-            source_path: The source-path URL param (e.g. "/project/<uuid>")
-            timeout_ms: Timeout for the fetch call inside the tab
-            recaptcha_action: reCAPTCHA action to mint inline (empty = skip)
-
-        Returns:
-            dict with keys: status, rpc_result, chunks, error
-        """
+        """Execute a BOQ/WIZ batchexecute RPC from inside the user's flow.google.com tab."""
         payload = {
             "rpc_id": rpc_id,
             "inner_payload": inner_payload,
@@ -529,19 +553,28 @@ class BrowserBridge:
         }
         if recaptcha_action:
             payload["recaptcha_action"] = recaptcha_action
-        return await self._enqueue_and_wait("batch_execute", payload)
+        return await self._enqueue_and_wait(
+            "batch_execute",
+            payload,
+            target_account_email=account_email,
+        )
 
     async def init_flow_project(
         self,
         target_project_id: str = "",
         force_new: bool = False,
         timeout_ms: int = 25000,
+        account_email: Optional[str] = None,
     ) -> dict:
         """Ask extension to verify or navigate flow.google.com tab to a project."""
         payload: dict[str, Any] = {"force_new": force_new}
         if target_project_id:
             payload["target_project_id"] = target_project_id
-        return await self._enqueue_and_wait("init_flow_project", payload)
+        return await self._enqueue_and_wait(
+            "init_flow_project",
+            payload,
+            target_account_email=account_email,
+        )
 
     async def proxy_fetch_binary(
         self,
@@ -550,6 +583,7 @@ class BrowserBridge:
         headers: Optional[dict] = None,
         body: Optional[str] = None,
         timeout_ms: int = 120000,
+        account_email: Optional[str] = None,
     ) -> tuple[int, bytes, dict]:
         """Convenience wrapper for binary downloads (video/image bytes).
         Returns (status, raw_bytes, headers).
@@ -561,6 +595,7 @@ class BrowserBridge:
             body=body,
             response_mode="arraybuffer",
             timeout_ms=timeout_ms,
+            account_email=account_email,
         )
         if result.get("error"):
             raise RuntimeError(f"proxy_fetch_binary {url}: {result['error']}")
@@ -571,3 +606,4 @@ class BrowserBridge:
 
 # Module-level singleton — imported by routers/sync.py and FlowClient.
 bridge = BrowserBridge()
+

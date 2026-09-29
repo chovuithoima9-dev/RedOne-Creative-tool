@@ -797,6 +797,7 @@ export function renderContent(root) {
     if (!taskName) { taskName = defaultTaskName('video'); nameInput.value = taskName; }
     setLoading(startBtn, true);
     try {
+      const targetFlowEmail = window.currentFlowAccount?.email || null;
       const res = await api.content.start({
         mode: form.mode,
         prompts: promptsToSend,
@@ -810,6 +811,7 @@ export function renderContent(root) {
         video_mode: form.mode === 'i2v' ? (root.querySelector('#cnt-video-mode')?.value || form.videoMode || 'start_image') : 'start_image',
         loop: form.mode === 'i2v' && (form.loop || form.videoMode === 'start_end_image'),
         task_name: taskName,
+        flow_account_email: targetFlowEmail,
       });
       // Nở seed gallery: N video mỗi prompt, giữ thứ tự prompt-major (khớp backend)
       // → item thứ k thuộc nhóm k // videosPerPrompt.
@@ -823,6 +825,7 @@ export function renderContent(root) {
         aspect: form.aspect,
         model: form.quality,
         name: taskName,
+        flow_account_email: res.flow_account_email || targetFlowEmail,
       });
       attachToTask(res.task_id);
       toast(`Đã tạo task #${res.task_id} (${res.items} items)`, 'success');
@@ -980,6 +983,9 @@ export function renderContent(root) {
       statusText = 'Đã hủy';
       cancelBtn.classList.add('hidden');
     }
+    if (taskState.flow_account_email) {
+      statusText += ` • Flow: ${taskState.flow_account_email}`;
+    }
     const el2 = root.querySelector('#cnt-status');
     if (el2) el2.textContent = statusText;
   }
@@ -1031,8 +1037,9 @@ export function renderContent(root) {
     // Show WHICH task these cards belong to (task name).
     const titleEl = root.querySelector('#cnt-results-title');
     if (titleEl) {
+      const acctTag = taskState?.flow_account_email ? ` [${taskState.flow_account_email.split('@')[0]}]` : '';
       titleEl.textContent = taskState
-        ? `Kết quả — ${taskState.name || ('Task #' + taskState.id)}`
+        ? `Kết quả — ${taskState.name || ('Task #' + taskState.id)}${acctTag}`
         : 'Kết quả';
     }
 

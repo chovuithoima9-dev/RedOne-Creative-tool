@@ -203,7 +203,13 @@ async def _reenqueue_task(task_id: int, front: bool = False) -> dict:
         from . import content as content_mod
         runner = content_mod._process_task
         kind = "content"
-    pos = await enqueue_q.enqueue(kind, task_id, runner, front=front)
+    pos = await enqueue_q.enqueue(
+        kind,
+        task_id,
+        runner,
+        front=front,
+        flow_account_email=task.get("flow_account_email"),
+    )
     return {"queue_position": pos, "kind": kind}
 
 
@@ -320,7 +326,7 @@ async def _retry_items_runner(task: dict, item_ids: list[int], force: bool = Fal
         finalize = content_mod._maybe_finalize
         pick = content_mod._pick_account
 
-    acc = pick()
+    acc = pick(task.get("flow_account_email"))
     if not acc:
         await hub.broadcast("task_error", {
             "task_id": task_id, "error": "Không có account khả dụng để gen lại",

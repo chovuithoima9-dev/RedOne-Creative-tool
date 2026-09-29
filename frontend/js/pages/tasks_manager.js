@@ -42,7 +42,7 @@ export function renderTasksManager(root) {
     el('div', { class: 'hero-icon' }, icon('refresh', 22)),
     el('div', { class: 'hero-text' },
       el('h2', null, 'Quản lý Task'),
-      el('p', null, 'Theo dõi tất cả task — chạy tuần tự 1 task / lúc theo thứ tự thời gian'),
+      el('p', null, 'Theo dõi tất cả task — hỗ trợ chạy song song 2 task trên 2 tài khoản Google Flow khác nhau'),
     ),
   ));
 
@@ -256,6 +256,13 @@ export function renderTasksManager(root) {
       el('td', null,
         el('span', { class: `chip ${stat.cls}` }, stat.label),
         posBadge,
+        t.flow_account_email
+          ? el('span', {
+              class: 'chip chip-purple',
+              title: `Tài khoản Google Flow: ${t.flow_account_email}`,
+              style: { marginLeft: '6px' },
+            }, `Flow: ${t.flow_account_email.split('@')[0]}`)
+          : null,
       ),
       el('td', null, progressBar),
       el('td', { style: { fontSize: '11.5px', color: 'var(--text-muted)' } },

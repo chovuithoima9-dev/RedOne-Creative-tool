@@ -1440,6 +1440,30 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true });
         return true;
     }
+    if (msg && msg.type === "GET_FLOW_ACCOUNT") {
+        (async () => {
+            try {
+                const tab = await _findLabsTab();
+                let acc = { email: null, tier: "FREE", credits: null };
+                if (tab) {
+                    acc = await _detectFlowAccountDetails(tab);
+                }
+                const finalEmail = acc.email || _lastDetectedAccount.email || null;
+                const finalTier = acc.tier || _lastDetectedAccount.tier || "FREE";
+                const finalCredits = acc.credits != null ? acc.credits : _lastDetectedAccount.credits;
+                sendResponse({
+                    ok: true,
+                    hasTab: !!tab,
+                    email: finalEmail,
+                    tier: finalTier,
+                    credits: finalCredits,
+                });
+            } catch (err) {
+                sendResponse({ ok: false, error: String(err) });
+            }
+        })();
+        return true;
+    }
     if (msg && msg.type === "GET_METRICS") {
         (async () => {
             // Active probe — re-verify backend reachability before

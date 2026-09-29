@@ -237,7 +237,7 @@ class BridgeFlowClient(FlowClient):
             # Fast-track CSRF bootstrap from active tab WIZ_global_data if not yet bootstrapped
             if not session.at_token:
                 try:
-                    dom_res = await bridge.batch_execute("DEBUG_DOM", {})
+                    dom_res = await bridge.batch_execute("DEBUG_DOM", {}, account_email=self._account_email)
                     r_dom = dom_res.get("rpc_result", {})
                     if r_dom.get("at"):
                         session.at_token = r_dom["at"]
@@ -311,6 +311,7 @@ class BridgeFlowClient(FlowClient):
                     headers={"Accept": "application/json"},
                     response_mode="json",
                     timeout_ms=15000,
+                    account_email=self._account_email,
                 )
             except BridgeExtensionOfflineError as e:
                 raise SessionDeadError(self._account_email, str(e))
@@ -426,6 +427,7 @@ class BridgeFlowClient(FlowClient):
                     body=body_json,
                     response_mode="json",
                     timeout_ms=120000,
+                    account_email=self._account_email,
                 )
             except BridgeExtensionOfflineError as e:
                 return {"error": str(e)}
@@ -545,7 +547,11 @@ class BridgeFlowClient(FlowClient):
         """Harvest reCAPTCHA token from the user's real Chrome using Google Flow's official sitekey."""
         log.info(f"[{self._account_email}] (bridge) harvesting reCAPTCHA action={action}...")
         try:
-            token = await bridge.harvest_recaptcha(site_key=self.FLOW_RECAPTCHA_SITE_KEY, action=action)
+            token = await bridge.harvest_recaptcha(
+                site_key=self.FLOW_RECAPTCHA_SITE_KEY,
+                action=action,
+                account_email=self._account_email,
+            )
         except BridgeExtensionOfflineError as e:
             log.warning(f"(bridge) reCAPTCHA: {e}")
             return ""
@@ -578,6 +584,7 @@ class BridgeFlowClient(FlowClient):
                 r = await bridge.proxy_fetch(
                     url=url, method="GET", headers=headers,
                     response_mode="json", timeout_ms=30000,
+                    account_email=self._account_email,
                 )
             else:
                 url = f"{self.TRPC}/{procedure}"
@@ -585,6 +592,7 @@ class BridgeFlowClient(FlowClient):
                 r = await bridge.proxy_fetch(
                     url=url, method="POST", headers=headers, body=body,
                     response_mode="json", timeout_ms=30000,
+                    account_email=self._account_email,
                 )
             status = r.get("status", 0)
             body = r.get("body")
@@ -1638,6 +1646,7 @@ class BridgeFlowClient(FlowClient):
                     url=download_url,
                     method="GET",
                     timeout_ms=300000,
+                    account_email=self._account_email,
                 )
                 if status == 200 and body and len(body) > 100_000:
                     if body.startswith(b"\xff\xd8\xff"):
@@ -1656,6 +1665,7 @@ class BridgeFlowClient(FlowClient):
                 url=trpc_url,
                 method="GET",
                 timeout_ms=300000,
+                account_email=self._account_email,
             )
             if status == 200 and body and len(body) > 100_000 and not body.startswith(b"\xff\xd8\xff"):
                 log.info(f"(bridge) _fetch_mp4_via_browser OK via trpc: {len(body)} bytes")
@@ -1673,6 +1683,7 @@ class BridgeFlowClient(FlowClient):
         try:
             status, body, _ = await bridge.proxy_fetch_binary(
                 url=url, method="GET", timeout_ms=300000,
+                account_email=self._account_email,
             )
             if status == 200 and body and len(body) > 100_000:
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1701,6 +1712,7 @@ class BridgeFlowClient(FlowClient):
         try:
             status, body, _ = await bridge.proxy_fetch_binary(
                 url=url, method="GET", timeout_ms=60000,
+                account_email=self._account_email,
             )
             if status == 200 and body and len(body) > 100:
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)

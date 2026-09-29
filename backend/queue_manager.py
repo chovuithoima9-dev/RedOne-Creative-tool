@@ -1,14 +1,12 @@
-"""Sequential task queue — runs ONE generation task at a time.
+"""Sequential task queue — supports parallel multi-account generation tasks.
 
 Workflow:
-  - Routers (content/image/long_video) call `queue.enqueue(kind, task_id, runner)`
-    instead of `asyncio.create_task` directly.
-  - A single background worker picks the next QUEUED item and awaits its runner.
-  - When the runner finishes (success / error / cancel), the worker moves on.
-  - Cancellation: removes from queue if not yet started; if currently running,
-    cancels the underlying asyncio.Task.
-
-This guarantees the user's "1 task at a time, in arrival order" requirement.
+  - Routers (content/image/long_video) call `queue.enqueue(kind, task_id, runner, flow_account_email=...)`.
+  - Up to `max_concurrency` tasks can run in parallel (default 2 for Google Flow queue).
+  - Per-account lock: tasks sharing the same `flow_account_email` are serialized
+    (one at a time per Google Flow account to prevent rate-limit / session collision).
+  - Tasks on different Google Flow accounts run simultaneously in parallel.
+  - Cancellation & Pause: can target waiting or in-flight tasks.
 """
 from __future__ import annotations
 import asyncio
@@ -31,24 +29,35 @@ class QueuedItem:
     task_id: int
     kind: str           # "content" | "image" | "long_video"
     enqueued_at: float = field(default_factory=time.time)
+    flow_account_email: Optional[str] = None
 
 
 class TaskQueue:
-    def __init__(self):
+    def __init__(self, max_concurrency: int = 1):
+        self.max_concurrency = max_concurrency
         self._items: list[QueuedItem] = []
         self._runners: dict[int, Runner] = {}      # task_id → runner coro
-        self._current: Optional[QueuedItem] = None
-        self._current_async_task: Optional[asyncio.Task] = None
+        self._running: dict[int, QueuedItem] = {}  # task_id → QueuedItem
+        self._running_tasks: dict[int, asyncio.Task] = {} # task_id → asyncio.Task
         self._cancel_set: set[int] = set()         # tasks marked to skip / cancel
         self._pause_set: set[int] = set()          # tasks paused (resumable, not cancelled)
         self._signal = asyncio.Event()
         self._worker: Optional[asyncio.Task] = None
 
+    # ── backwards compatibility properties ────────────────
+    @property
+    def _current(self) -> Optional[QueuedItem]:
+        return next(iter(self._running.values()), None) if self._running else None
+
+    @property
+    def _current_async_task(self) -> Optional[asyncio.Task]:
+        return next(iter(self._running_tasks.values()), None) if self._running_tasks else None
+
     # ── lifecycle ─────────────────────────────────────────
     def start(self):
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._loop())
-            log.info("Queue worker started")
+            log.info(f"Queue worker started (max_concurrency={self.max_concurrency})")
 
     def stop(self):
         if self._worker and not self._worker.done():
@@ -56,20 +65,31 @@ class TaskQueue:
             log.info("Queue worker stopped")
 
     # ── public api ────────────────────────────────────────
-    async def enqueue(self, kind: str, task_id: int, runner: Runner, front: bool = False) -> int:
+    async def enqueue(
+        self,
+        kind: str,
+        task_id: int,
+        runner: Runner,
+        front: bool = False,
+        flow_account_email: Optional[str] = None,
+    ) -> int:
         """Add a task to the queue. Returns its queue index (0 = next to run).
 
         `front=True` inserts at the HEAD of the waiting list so the task runs
         right after the currently-running one finishes — used by Resume so a
         paused task continues NEXT instead of being sent to the back."""
-        item = QueuedItem(task_id=task_id, kind=kind)
+        clean_email = flow_account_email.strip().lower() if flow_account_email else None
+        item = QueuedItem(task_id=task_id, kind=kind, flow_account_email=clean_email)
         if front:
             self._items.insert(0, item)
         else:
             self._items.append(item)
         self._runners[task_id] = runner
         self._signal.set()
-        log.info(f"Enqueued task={task_id} kind={kind} front={front} (queue len={len(self._items)})")
+        log.info(
+            f"Enqueued task={task_id} kind={kind} flow_acc={clean_email} "
+            f"front={front} (queue len={len(self._items)})"
+        )
         await hub.broadcast("queue_updated", self.snapshot())
         return 0 if front else len(self._items) - 1
 
@@ -94,20 +114,19 @@ class TaskQueue:
             return True
 
         # Case 2: currently running → cancel the asyncio.Task
-        if (
-            self._current and self._current.task_id == task_id
-            and self._current_async_task and not self._current_async_task.done()
-        ):
+        if task_id in self._running:
             self._cancel_set.add(task_id)
-            self._current_async_task.cancel()
-            log.info(f"Cancelling running task={task_id}")
+            async_task = self._running_tasks.get(task_id)
+            if async_task and not async_task.done():
+                async_task.cancel()
+                log.info(f"Cancelling running task={task_id}")
             return True
 
         return False
 
     def position_of(self, task_id: int) -> int:
         """Return 0 if running, 1+ if queued, -1 if not found."""
-        if self._current and self._current.task_id == task_id:
+        if task_id in self._running:
             return 0
         for idx, item in enumerate(self._items):
             if item.task_id == task_id:
@@ -136,18 +155,15 @@ class TaskQueue:
             await hub.broadcast("task_paused", {"task_id": task_id})
             await hub.broadcast("queue_updated", self.snapshot())
             return "queued"
-        if (
-            self._current and self._current.task_id == task_id
-            and self._current_async_task and not self._current_async_task.done()
-        ):
-            # Hard pause: a single high-concurrency batch has no batch boundary
-            # to stop at cooperatively, so flag PAUSED then cancel the in-flight
-            # task NOW. The worker's CancelledError handler sees _pause_set and
-            # marks PAUSED (not CANCELLED) + resets half-done items to PENDING.
+
+        if task_id in self._running:
             self._pause_set.add(task_id)
-            self._current_async_task.cancel()
-            log.info(f"Pausing running task={task_id} (cancel in-flight)")
+            async_task = self._running_tasks.get(task_id)
+            if async_task and not async_task.done():
+                async_task.cancel()
+                log.info(f"Pausing running task={task_id} (cancel in-flight)")
             return "running"
+
         return "absent"
 
     def is_paused(self, task_id: int) -> bool:
@@ -165,75 +181,74 @@ class TaskQueue:
         await hub.broadcast("queue_updated", self.snapshot())
 
     def snapshot(self) -> dict:
+        running_items = [asdict(x) for x in self._running.values()]
         return {
-            "current": asdict(self._current) if self._current else None,
+            "current": running_items[0] if running_items else None,
+            "running": running_items,
             "queued": [asdict(x) for x in self._items],
         }
 
     # ── worker loop ──────────────────────────────────────
     async def _loop(self):
-        log.info("Queue loop started")
+        log.info(f"Queue loop started (max_concurrency={self.max_concurrency})")
         while True:
             try:
+                # 1. Purge cancelled items in queue
+                while self._items and self._items[0].task_id in self._cancel_set:
+                    item = self._items.pop(0)
+                    self._runners.pop(item.task_id, None)
+                    self._cancel_set.discard(item.task_id)
+                    await hub.broadcast("queue_updated", self.snapshot())
+
                 if not self._items:
                     self._signal.clear()
                     await self._signal.wait()
                     continue
 
-                item = self._items.pop(0)
-                runner = self._runners.pop(item.task_id, None)
-
-                # Skip if was cancelled before reaching the front
-                if item.task_id in self._cancel_set:
-                    self._cancel_set.discard(item.task_id)
-                    await hub.broadcast("queue_updated", self.snapshot())
+                if len(self._running) >= self.max_concurrency:
+                    self._signal.clear()
+                    await self._signal.wait()
                     continue
+
+                # 2. Find eligible task whose account is NOT already running
+                active_accounts = {
+                    item.flow_account_email.lower()
+                    for item in self._running.values()
+                    if item.flow_account_email
+                }
+
+                eligible_idx = None
+                for idx, candidate in enumerate(self._items):
+                    if candidate.task_id in self._cancel_set:
+                        self._cancel_set.discard(candidate.task_id)
+                        continue
+                    if candidate.flow_account_email:
+                        cand_acc = candidate.flow_account_email.lower()
+                        if cand_acc in active_accounts:
+                            # This account is busy with an in-flight task; wait for it
+                            continue
+                    eligible_idx = idx
+                    break
+
+                if eligible_idx is None:
+                    # All remaining queued tasks are locked by currently running accounts
+                    self._signal.clear()
+                    await self._signal.wait()
+                    continue
+
+                item = self._items.pop(eligible_idx)
+                runner = self._runners.pop(item.task_id, None)
 
                 if runner is None:
                     log.warning(f"No runner for task={item.task_id} — skipping")
                     continue
 
-                self._current = item
+                self._running[item.task_id] = item
                 await hub.broadcast("queue_updated", self.snapshot())
 
-                # Run the task. Wrap so we can intercept CancelledError.
-                self._current_async_task = asyncio.create_task(runner(item.task_id))
-                try:
-                    await self._current_async_task
-                except asyncio.CancelledError:
-                    if item.task_id in self._pause_set:
-                        # Paused (not cancelled) — keep it resumable. Reset any
-                        # half-done items so resume regenerates exactly them.
-                        log.info(f"Task {item.task_id} paused mid-run")
-                        self._pause_set.discard(item.task_id)
-                        try:
-                            from .config import ItemStatus
-                            _redo = {ItemStatus.GENERATING.value, ItemStatus.UPLOADING.value,
-                                     ItemStatus.DOWNLOADING.value}
-                            for _it in db.get_task_items(item.task_id):
-                                if _it["status"] in _redo:
-                                    db.update_item(_it["id"], status=ItemStatus.PENDING.value,
-                                                   error_message=None)
-                            db.update_task(item.task_id, status=TaskStatus.PAUSED.value,
-                                           finished_at=None)
-                        except Exception:
-                            pass
-                        await hub.broadcast("task_paused", {"task_id": item.task_id})
-                    else:
-                        log.info(f"Task {item.task_id} was cancelled mid-run")
-                        try:
-                            db.update_task(item.task_id, status=TaskStatus.CANCELLED.value)
-                        except Exception:
-                            pass
-                        await hub.broadcast("task_cancelled", {"task_id": item.task_id})
-                except Exception as e:
-                    log.exception(f"Queue runner crashed for task {item.task_id}: {e}")
-                finally:
-                    self._cancel_set.discard(item.task_id)
-                    self._pause_set.discard(item.task_id)
-                    self._current = None
-                    self._current_async_task = None
-                    await hub.broadcast("queue_updated", self.snapshot())
+                # Run task in background wrapper coroutine
+                t = asyncio.create_task(self._run_task_item(item, runner))
+                self._running_tasks[item.task_id] = t
 
             except asyncio.CancelledError:
                 log.info("Queue loop cancelled")
@@ -242,11 +257,48 @@ class TaskQueue:
                 log.exception(f"Queue loop unexpected error: {e}")
                 await asyncio.sleep(1)
 
+    async def _run_task_item(self, item: QueuedItem, runner: Runner):
+        task_id = item.task_id
+        try:
+            await runner(task_id)
+        except asyncio.CancelledError:
+            if task_id in self._pause_set:
+                log.info(f"Task {task_id} paused mid-run")
+                self._pause_set.discard(task_id)
+                try:
+                    from .config import ItemStatus
+                    _redo = {
+                        ItemStatus.GENERATING.value, ItemStatus.UPLOADING.value,
+                        ItemStatus.DOWNLOADING.value,
+                    }
+                    for _it in db.get_task_items(task_id):
+                        if _it["status"] in _redo:
+                            db.update_item(_it["id"], status=ItemStatus.PENDING.value, error_message=None)
+                    db.update_task(task_id, status=TaskStatus.PAUSED.value, finished_at=None)
+                except Exception:
+                    pass
+                await hub.broadcast("task_paused", {"task_id": task_id})
+            else:
+                log.info(f"Task {task_id} was cancelled mid-run")
+                try:
+                    db.update_task(task_id, status=TaskStatus.CANCELLED.value)
+                except Exception:
+                    pass
+                await hub.broadcast("task_cancelled", {"task_id": task_id})
+        except Exception as e:
+            log.exception(f"Queue runner crashed for task {task_id}: {e}")
+        finally:
+            self._cancel_set.discard(task_id)
+            self._pause_set.discard(task_id)
+            self._running.pop(task_id, None)
+            self._running_tasks.pop(task_id, None)
+            await hub.broadcast("queue_updated", self.snapshot())
+            # Wake up the queue loop to pick next eligible queued task
+            self._signal.set()
 
-queue = TaskQueue()
+
+queue = TaskQueue(max_concurrency=2)
 
 # Shakker runs on its OWN independent queue + worker so a Shakker batch and
-# a Flow (image/video/long-video) task execute CONCURRENTLY. Flow tasks stay
-# sequential among themselves on `queue`; Shakker tasks stay sequential among
-# themselves on `shakker_queue`; the two lanes run in parallel.
-shakker_queue = TaskQueue()
+# a Flow (image/video/long-video) task execute CONCURRENTLY.
+shakker_queue = TaskQueue(max_concurrency=1)

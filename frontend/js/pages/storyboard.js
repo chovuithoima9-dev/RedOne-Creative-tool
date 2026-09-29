@@ -226,6 +226,10 @@ export function renderStoryboard(root) {
     fd.append('model', form.model);
     fd.append('aspect_ratio', form.aspect);
     fd.append('concurrent', String(form.concurrent));
+    const targetFlowEmail = window.currentFlowAccount?.email || null;
+    if (targetFlowEmail) {
+      fd.append('flow_account_email', targetFlowEmail);
+    }
     form.refs.forEach(r => fd.append('refs', r.file));
     _generating = true;
     _liveRenderSB();   // show "đang viết kịch bản" spinner on the current page
@@ -238,6 +242,7 @@ export function renderStoryboard(root) {
         aspect: form.aspect,
         name: res.name || '',
         idea: idea,
+        flow_account_email: res.flow_account_email || targetFlowEmail,
       });
       _taskId = res.task_id;
       _liveRenderSB();   // attach + render on whichever page is shown now
@@ -351,8 +356,9 @@ export function renderStoryboard(root) {
     // Show WHICH storyboard task these scenes belong to (task name).
     const titleEl = root.querySelector('#sb2-results-title');
     if (titleEl) {
+      const acctTag = state?.flow_account_email ? ` [${state.flow_account_email.split('@')[0]}]` : '';
       titleEl.textContent = state
-        ? `Storyboard — ${state.name || ('Task #' + state.id)}`
+        ? `Storyboard — ${state.name || ('Task #' + state.id)}${acctTag}`
         : 'Storyboard';
     }
 
@@ -557,9 +563,13 @@ export function renderStoryboard(root) {
     }
 
     const total = state.total || items.length;
-    statusEl.textContent = state.status === 'completed'
+    let stText = state.status === 'completed'
       ? `Xong ${state.done || 0}/${total}${state.error ? ` • lỗi ${state.error}` : ''}`
       : `Đang gen ${(state.done || 0) + (state.error || 0)}/${total}`;
+    if (state.flow_account_email) {
+      stText += ` • Flow: ${state.flow_account_email}`;
+    }
+    statusEl.textContent = stText;
   }
 
   // On mount: Tasks Manager eye deep-link takes priority; otherwise liveRender

@@ -63,6 +63,16 @@
         "content_accounts.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "content_tool.js"
+      ],
+      "run_at": "document_start"
     }
   ],
   "background": {

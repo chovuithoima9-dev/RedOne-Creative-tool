@@ -37,14 +37,35 @@ class StartTaskRequest(BaseModel):
     loop: bool = False               # I2V "Loop video": reuse the image as first+last frame
     video_mode: Optional[str] = "start_image"  # start_image | start_end_image | components
     task_name: Optional[str] = None
+    flow_account_email: Optional[str] = None
 
 
 _active_tasks: dict[int, asyncio.Task] = {}
 
 
-def _pick_account() -> Optional[dict]:
-    """Pick the active Google Flow account currently opened in the Chrome tab first,
-    otherwise fallback to the account with the highest credit in the database."""
+def _pick_account(target_email: Optional[str] = None) -> Optional[dict]:
+    """Pick target Flow account if specified, otherwise the active tab account,
+    otherwise the highest-credit account in DB."""
+    if target_email:
+        clean = target_email.strip().lower()
+        acc = db.get_account_by_email(clean)
+        if acc:
+            if not acc.get("enabled"):
+                try:
+                    db.update_account(acc["id"], enabled=1)
+                    acc["enabled"] = 1
+                except Exception:
+                    pass
+            return acc
+        else:
+            try:
+                acc_id = db.add_account(clean)
+                new_acc = db.get_account(acc_id)
+                if new_acc:
+                    return new_acc
+            except Exception:
+                pass
+
     from ..services.browser_bridge import bridge
     active_email = bridge.get_active_account_email()
     if active_email:
@@ -78,9 +99,6 @@ def _pick_account() -> Optional[dict]:
 
         accounts.sort(key=lambda a: (_tier_score(a.get("tier")), a.get("credit") or 0), reverse=True)
         return accounts[0]
-    # Vertex AI uses the baked service account — no Google login needed. On a
-    # fresh machine with no accounts, return a synthetic one so gen proceeds.
-    # Other modes (extension/playwright) still require a real account.
     from ..services.flow_factory import is_vertex_mode, synthetic_vertex_account
     if is_vertex_mode():
         return synthetic_vertex_account()
@@ -410,7 +428,7 @@ async def _process_task(task_id: int):
     db.update_task(task_id, status=TaskStatus.RUNNING.value, started_at=str(time.time()))
     await hub.broadcast("task_started", {"task_id": task_id})
 
-    acc = _pick_account()
+    acc = _pick_account(task.get("flow_account_email"))
     if not acc:
         db.update_task(task_id, status=TaskStatus.ERROR.value)
         await hub.broadcast("task_error", {"task_id": task_id, "error": "Không có account khả dụng"})
@@ -531,6 +549,7 @@ async def start_content_task(body: StartTaskRequest):
     if not 1 <= body.videos_per_prompt <= 4:
         raise HTTPException(400, "videos_per_prompt phải từ 1 đến 4")
     task_name = (body.task_name or "").strip() or f"video_{int(time.time())}"
+    flow_acc = body.flow_account_email.strip().lower() if body.flow_account_email else None
     # Clamp duration to what the chosen model actually supports
     safe_duration = clamp_duration(body.quality, body.duration)
     from ..services import hub_client
@@ -545,6 +564,7 @@ async def start_content_task(body: StartTaskRequest):
         total_count=len(body.prompts) * body.videos_per_prompt,
         status=TaskStatus.PENDING.value,
         user_email=hub_client.current_user_email(),
+        flow_account_email=flow_acc,
     )
     for i, p in enumerate(body.prompts):
         extra = {}
@@ -566,12 +586,13 @@ async def start_content_task(body: StartTaskRequest):
         for _ in range(body.videos_per_prompt):
             db.add_task_item(task_id, p, extra=extra or None)
 
-    position = await queue.enqueue("content", task_id, _process_task)
+    position = await queue.enqueue("content", task_id, _process_task, flow_account_email=flow_acc)
     return {
         "task_id": task_id,
         "items": len(body.prompts) * body.videos_per_prompt,
         "queue_position": position,
         "queued": position > 0,
+        "flow_account_email": flow_acc,
     }
 
 

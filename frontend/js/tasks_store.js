@@ -129,6 +129,7 @@ export const tasksStore = {
       error: 0,
       total: (meta.items || []).length,
       error_message: null,
+      flow_account_email: meta.flow_account_email || null,
       created_at: Date.now(),
     };
     tasks.set(taskId, t);
@@ -396,6 +397,7 @@ export const tasksStore = {
       error: task.error_count || 0,
       total: task.total_count || (items ? items.length : 0),
       error_message: null,
+      flow_account_email: task.flow_account_email || null,
       created_at: task.created_at ? new Date(task.created_at.includes(' ') ? task.created_at.replace(' ', 'T') + 'Z' : task.created_at).getTime() : Date.now(),
     };
     if (!t.idea) {

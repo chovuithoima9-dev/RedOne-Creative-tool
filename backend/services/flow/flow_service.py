@@ -97,6 +97,7 @@ class FlowService:
                     source_path=source_path,
                     timeout_ms=timeout_ms,
                     recaptcha_action=recaptcha_action,
+                    account_email=account_email,
                 )
                 if res.get("status") == 200 and res.get("rpc_result") is not None:
                     return res

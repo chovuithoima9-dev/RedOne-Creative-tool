@@ -57,6 +57,7 @@ class Database:
             character_images_json TEXT,
             status TEXT DEFAULT 'PENDING',
             idea TEXT,
+            flow_account_email TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             started_at TEXT,
             finished_at TEXT
@@ -104,6 +105,7 @@ class Database:
         self._add_column_if_missing("tasks", "duration", "INTEGER DEFAULT 8")
         self._add_column_if_missing("tasks", "user_email", "TEXT")
         self._add_column_if_missing("tasks", "idea", "TEXT")
+        self._add_column_if_missing("tasks", "flow_account_email", "TEXT")
         self._add_column_if_missing("shakker_accounts", "webid", "TEXT")
         # Trình dựng video (Part B): editor state JSON + last-saved time.
         self._add_column_if_missing("projects", "data_json", "TEXT")

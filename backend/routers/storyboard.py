@@ -90,12 +90,14 @@ async def start_storyboard(
     aspect_ratio: str = Form("16:9"),
     concurrent: int = Form(4),                 # "số luồng song song"
     task_name: Optional[str] = Form(None),
+    flow_account_email: Optional[str] = Form(None),
     refs: List[UploadFile] = File(default=[]),
 ):
     """Generate a storyboard: idea (+ optional refs) → N scene prompts → N
     images. Returns {task_id, prompts}; images stream in over WebSocket via
     the reused image pipeline."""
     idea = (idea or "").strip()
+    clean_flow_acc = flow_account_email.strip().lower() if flow_account_email else None
     have_refs = any(u and u.filename for u in (refs or []))
     if not idea and not have_refs:
         raise HTTPException(400, "Cần nhập ý tưởng hoặc thêm ảnh tham chiếu")
@@ -175,6 +177,7 @@ async def start_storyboard(
         status=TaskStatus.PENDING.value,
         user_email=hub_client.current_user_email(),
         idea=idea,
+        flow_account_email=clean_flow_acc,
     )
     extra_global = {}
     if ref_paths:
@@ -185,7 +188,7 @@ async def start_storyboard(
     for p in prompts:
         db.add_task_item(task_id, p, extra=extra_global)
 
-    position = await queue.enqueue("image", task_id, _process_image_task)
+    position = await queue.enqueue("image", task_id, _process_image_task, flow_account_email=clean_flow_acc)
     log.info(
         f"Storyboard task {task_id}: {len(prompts)} scenes, model={model}, "
         f"concurrent={concurrent}, refs={len(ref_paths)} (model_used={result['model_used']})"
@@ -199,4 +202,5 @@ async def start_storyboard(
         "fallback_log": result["fallback_log"],
         "queue_position": position,
         "queued": position > 0,
+        "flow_account_email": clean_flow_acc,
     }

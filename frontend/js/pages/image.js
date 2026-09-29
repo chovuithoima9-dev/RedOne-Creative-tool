@@ -601,6 +601,7 @@ export function renderImage(root) {
     if (!taskName) { taskName = defaultTaskName(); nameInput.value = taskName; }
     setLoading(startBtn, true);
     try {
+      const targetFlowEmail = window.currentFlowAccount?.email || null;
       const res = await api.image.start({
         prompts,
         model: form.model,
@@ -609,6 +610,7 @@ export function renderImage(root) {
         concurrent: form.concurrent,
         reference_image_paths: form.refImagePaths.length ? form.refImagePaths : null,
         task_name: taskName,
+        flow_account_email: targetFlowEmail,
       });
       // Register the task in the global store so it survives navigation
       tasksStore.register(res.task_id, 'image', {
@@ -616,6 +618,7 @@ export function renderImage(root) {
         aspect: form.aspect,
         model: form.model,
         name: taskName,
+        flow_account_email: res.flow_account_email || targetFlowEmail,
       });
       attachToTask(res.task_id);
       toast(`Task #${res.task_id} (${res.items} ảnh)`, 'success');
@@ -654,8 +657,9 @@ export function renderImage(root) {
     // knows the current task — and notices if it ever changes.
     const titleEl = root.querySelector('#img-results-title');
     if (titleEl) {
+      const acctTag = taskState?.flow_account_email ? ` [${taskState.flow_account_email.split('@')[0]}]` : '';
       titleEl.textContent = taskState
-        ? `Ảnh kết quả — ${taskState.name || ('Task #' + taskState.id)}`
+        ? `Ảnh kết quả — ${taskState.name || ('Task #' + taskState.id)}${acctTag}`
         : 'Ảnh kết quả';
     }
 
@@ -873,6 +877,9 @@ export function renderImage(root) {
       cancelBtn.classList.add('hidden');
     } else {
       statusText = '—';
+    }
+    if (taskState.flow_account_email) {
+      statusText += ` • Flow: ${taskState.flow_account_email}`;
     }
     root.querySelector('#img-status').textContent = statusText;
   }
