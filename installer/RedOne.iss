@@ -8,7 +8,7 @@
 ; ============================================================
 
 #define MyAppName "RedOne Creative"
-#define MyAppVersion "1.6.1"
+#define MyAppVersion "1.6.2"
 #define MyAppPublisher "RedOne"
 #define MyAppExeName "RedOne Creative.exe"
 
