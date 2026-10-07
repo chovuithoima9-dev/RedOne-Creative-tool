@@ -49,11 +49,11 @@ RECAPTCHA_PLACEHOLDER = "__MINT_RECAPTCHA__"
 # ── 3. Image Models ───────────────────────────────────────────────────────────
 IMAGE_MODELS: dict[str, str] = {
     "nano_banana_pro": "GEM_PIX_2",
-    "nano_banana_2": "NARWHAL",
+    "nano_banana_2": "HARBOR_SEAL",
     "nano_banana_lite": "HARBOR_SEAL",
     "nano_banana_2_lite": "HARBOR_SEAL",
     "gem_pix_2": "GEM_PIX_2",
-    "narwhal": "NARWHAL",
+    "narwhal": "HARBOR_SEAL",
     "harbor_seal": "HARBOR_SEAL",
     "imagen_3_5": "IMAGEN_3_5",
     "imagen_3": "IMAGEN_3",

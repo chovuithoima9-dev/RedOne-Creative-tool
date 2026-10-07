@@ -590,7 +590,7 @@ class FlowClient:
     # Model name mapping for image generation
     IMAGE_MODEL_MAP = {
         "nano_banana_pro": "GEM_PIX_2",
-        "nano_banana_2": "NARWHAL",
+        "nano_banana_2": "HARBOR_SEAL",
         # Confirmed via labs.google HAR 2026-07-20. Unlike Imagen, HARBOR_SEAL
         # keeps its own model name when reference images are attached (the
         # capture included one) — no R2I swap needed.

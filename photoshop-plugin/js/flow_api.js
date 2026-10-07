@@ -23,7 +23,8 @@ const MAX_RETRY = 3;
 
 const IMAGE_MODEL_MAP = {
   nano_banana_pro: 'GEM_PIX_2',
-  nano_banana_2: 'NARWHAL',
+  nano_banana_2: 'HARBOR_SEAL',
+  nano_banana_lite: 'HARBOR_SEAL',
   imagen_4: 'IMAGEN_3_5',
 };
 
