@@ -95,7 +95,7 @@ async def check_for_update(force: bool = False) -> dict:
         "can_auto_install": IS_FROZEN,   # only frozen EXE can self-replace
     }
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             r = await client.get(url, headers=headers)
             if r.status_code == 404:
                 result["error"] = "Chưa có release nào trên GitHub repo"
