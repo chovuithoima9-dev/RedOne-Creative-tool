@@ -257,8 +257,10 @@ class FlowClient:
 
     IMAGE_MODEL_MAP = {
         "nano_banana_pro": "GEM_PIX_2",
-        "nano_banana_2": "HARBOR_SEAL",
+        "nano_banana_2": "BELUGA",
+        "nano_banana_2_1": "BELUGA",
         "nano_banana_lite": "HARBOR_SEAL",
+        "nano_banana_2_lite": "HARBOR_SEAL",
         "imagen_4": "IMAGEN_3_5",
     }
 

@@ -39,11 +39,13 @@ FLOW_RPCS = {
 
 IMAGE_MODELS = {
     "nano_banana_pro": "GEM_PIX_2",
-    "nano_banana_2": "HARBOR_SEAL",
+    "nano_banana_2": "BELUGA",
+    "nano_banana_2_1": "BELUGA",
     "nano_banana_lite": "HARBOR_SEAL",
     "nano_banana_2_lite": "HARBOR_SEAL",
     "gem_pix_2": "GEM_PIX_2",
-    "narwhal": "HARBOR_SEAL",
+    "beluga": "BELUGA",
+    "narwhal": "BELUGA",
     "harbor_seal": "HARBOR_SEAL",
     "imagen_3_5": "IMAGEN_3_5",
     "imagen_3": "IMAGEN_3",

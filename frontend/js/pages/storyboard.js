@@ -10,8 +10,8 @@ import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePr
 
 const IMAGE_MODELS = [
   { key: 'nano_banana_pro',  label: '🍌 Nano Banana Pro' },
-  { key: 'nano_banana_2',    label: '🍌 Nano Banana 2' },
-  { key: 'nano_banana_lite', label: '🍌 Nano Banana Lite' },
+  { key: 'nano_banana_2',    label: '🍌 Nano Banana 2.1' },
+  { key: 'nano_banana_lite', label: '🍌 Nano Banana 2 Lite' },
 ];
 const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 const DRAFT_IDEA_KEY = 'redone_storyboard_draft_idea';

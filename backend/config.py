@@ -263,8 +263,10 @@ VIDEO_MODELS = {
 # FlowClient.IMAGE_MODEL_MAP. Kept in sync so it doesn't mislead.
 IMAGE_MODELS = {
     "nano_banana_pro": {"name": "Nano Banana Pro", "cost": 0},
-    "nano_banana_2": {"name": "Nano Banana 2", "cost": 0},
-    "nano_banana_lite": {"name": "Nano Banana Lite", "cost": 0},
+    "nano_banana_2": {"name": "Nano Banana 2.1", "cost": 0},
+    "nano_banana_2_1": {"name": "Nano Banana 2.1", "cost": 0},
+    "nano_banana_lite": {"name": "Nano Banana 2 Lite", "cost": 0},
+    "nano_banana_2_lite": {"name": "Nano Banana 2 Lite", "cost": 0},
 }
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]

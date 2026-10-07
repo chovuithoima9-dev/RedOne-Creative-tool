@@ -913,11 +913,13 @@ class BridgeFlowClient(FlowClient):
     # Model name mapping for batchexecute (may differ from REST API)
     BOQ_IMAGE_MODEL_MAP = {
         "nano_banana_pro": "GEM_PIX_2",
-        "nano_banana_2": "HARBOR_SEAL",
+        "nano_banana_2": "BELUGA",
+        "nano_banana_2_1": "BELUGA",
         "nano_banana_lite": "HARBOR_SEAL",
         "nano_banana_2_lite": "HARBOR_SEAL",
+        "beluga": "BELUGA",
         "harbor_seal": "HARBOR_SEAL",
-        "narwhal": "HARBOR_SEAL",
+        "narwhal": "BELUGA",
         "gem_pix_2": "GEM_PIX_2",
         "imagen_4": "IMAGEN_3_5",
         "imagen_3_5": "IMAGEN_3_5",
@@ -973,10 +975,10 @@ class BridgeFlowClient(FlowClient):
         m_key_lower = model_key.lower() if isinstance(model_key, str) else ""
         model_name = self.BOQ_IMAGE_MODEL_MAP.get(
             m_key_lower,
-            model_key if model_key in ("GEM_PIX_2", "HARBOR_SEAL", "IMAGEN_3_5", "IMAGEN_3", "IMAGEN_3_FAST") else "GEM_PIX_2"
+            model_key if model_key in ("GEM_PIX_2", "BELUGA", "HARBOR_SEAL", "IMAGEN_3_5", "IMAGEN_3", "IMAGEN_3_FAST") else "GEM_PIX_2"
         )
         if model_name == "NARWHAL":
-            model_name = "HARBOR_SEAL"
+            model_name = "BELUGA"
         ar_code = self.BOQ_ASPECT_RATIO_MAP.get(aspect_ratio, 3)
 
         # Preflight session to match Google Flow Angular frontend (nzlxg)
