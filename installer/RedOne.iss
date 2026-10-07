@@ -14,7 +14,7 @@
 
 ; Extension force-install (khớp chrome-ext\update.xml đã push lên GitHub)
 #define ExtId "mjmcefhplbpghdpgpcefbaofenbegdmk"
-#define UpdateUrl "https://raw.githubusercontent.com/kiennt-bit/RedOne-Creative-tool/main/chrome-ext/update.xml"
+#define UpdateUrl "https://raw.githubusercontent.com/chovuithoima9-dev/RedOne-Creative-tool/main/chrome-ext/update.xml"
 
 ; Đường dẫn nguồn — .iss nằm trong installer\, repo root là cấp trên
 #define SrcRoot "..\"

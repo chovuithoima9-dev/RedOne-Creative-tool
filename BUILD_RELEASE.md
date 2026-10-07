@@ -29,13 +29,13 @@ Build mất ~2-5 phút, folder cuối cùng ~400-600 MB.
 
 ### Lần đầu — tạo repo
 
-1. Tạo repo `kiennt-bit/RedOne-Creative-tool` (đã có)
+1. Tạo repo `chovuithoima9-dev/RedOne-Creative-tool` (đã có)
 2. Push source code:
    ```bash
    cd D:\RedOne Creative tool
    git init
    git add .
-   git remote add origin https://github.com/kiennt-bit/RedOne-Creative-tool.git
+   git remote add origin https://github.com/chovuithoima9-dev/RedOne-Creative-tool.git
    git branch -M main
    git commit -m "Initial release"
    git push -u origin main
@@ -110,7 +110,7 @@ Rồi rotate cả 2 secrets (OAuth + service account JSON) trên GCP Console.
      ```
 
 4. **Tạo GitHub Release**:
-   - Vào https://github.com/kiennt-bit/RedOne-Creative-tool/releases/new
+   - Vào https://github.com/chovuithoima9-dev/RedOne-Creative-tool/releases/new
    - **Choose a tag**: gõ `v1.0.1` → "Create new tag: v1.0.1 on publish"
    - **Release title**: `v1.0.1 — Mô tả ngắn`
    - **Description**: changelog (Markdown). Đây là phần user thấy trong banner update.

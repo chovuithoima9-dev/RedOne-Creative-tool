@@ -1,4 +1,4 @@
-﻿# RedOne Creative — Session Handoff
+# RedOne Creative — Session Handoff
 
 > **Mục đích**: Mở file này trong session AI mới để continue build mà không mất context.
 > **Phiên bản hiện tại**: `v1.5.3` — **commit mới nhất trên `main`**.
@@ -15,7 +15,7 @@
 Deployment: EXE (PyInstaller `--onedir`) chạy `FastAPI 127.0.0.1:8000`, user dùng qua browser.
 
 ### Repo & workspace
-- **GitHub**: https://github.com/kiennt-bit/RedOne-Creative-tool
+- **GitHub**: https://github.com/chovuithoima9-dev/RedOne-Creative-tool
 - **Workspace**: `D:\RedOne Creative tool` (Windows)
 - **Branch**: `main` only
 

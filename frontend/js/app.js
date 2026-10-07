@@ -441,7 +441,7 @@ function setupAuthUI() {
 // The repo is single-sourced in backend config. Seed with the known URL so
 // the buttons work even before the fetch resolves, then refresh from
 // /api/system/info (a repo rename only needs a backend change).
-const _GH_FALLBACK = 'https://github.com/kiennt-bit/RedOne-Creative-tool';
+const _GH_FALLBACK = 'https://github.com/chovuithoima9-dev/RedOne-Creative-tool';
 let GH = {
   guide: `${_GH_FALLBACK}/blob/main/docs/HUONG_DAN_SU_DUNG.md`,
   feedback: `${_GH_FALLBACK}/issues`,   // → Google Form khi FEEDBACK_FORM_URL được set

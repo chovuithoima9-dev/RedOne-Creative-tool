@@ -1,4 +1,4 @@
-﻿# RedOne Creative — Project Context
+# RedOne Creative — Project Context
 
 > **Mục đích file này**: tóm tắt toàn bộ kiến trúc + quyết định + lịch sử để mở session AI mới (hoặc onboard dev mới) mà không mất context. Đọc file này + xem code = hiểu hệ thống.
 >
@@ -27,7 +27,7 @@ D:\RedOne Creative tool\        ← PROJECT CHÍNH
 > ⚠️ Mọi chỉnh sửa đi vào **`D:\RedOne Creative tool`**.
 
 ### Repo GitHub
-**https://github.com/kiennt-bit/RedOne-Creative-tool** — user `kiennt-bit`.
+**https://github.com/chovuithoima9-dev/RedOne-Creative-tool** — user `chovuithoima9-dev`.
 
 ---
 

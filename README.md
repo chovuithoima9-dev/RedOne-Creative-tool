@@ -7,7 +7,7 @@ Local desktop AI tool (nội bộ RedOne) — tạo ảnh / video bằng **Googl
 
 - **🚀 [Hướng dẫn sử dụng đầy đủ](docs/HUONG_DAN_SU_DUNG.md)** — cho người dùng cuối: cài đặt → đăng nhập @redone.vn → tạo ảnh/video → gen lại lỗi → quản lý task
 - **🔨 [Build & Release guide](BUILD_RELEASE.md)** — cho dev: PyInstaller, GitHub Release workflow
-- **📥 [Tải bản EXE mới nhất](https://github.com/kiennt-bit/RedOne-Creative-tool/releases)** — Windows 10/11
+- **📥 [Tải bản EXE mới nhất](https://github.com/chovuithoima9-dev/RedOne-Creative-tool/releases)** — Windows 10/11
 
 ## Cài đặt nhanh
 

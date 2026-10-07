@@ -10,7 +10,7 @@ APP_VERSION = "1.6.2"
 SERVER_PORT = 8000
 
 # GitHub repo for auto-update check (releases API)
-GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
+GITHUB_REPO = "chovuithoima9-dev/RedOne-Creative-tool"
 
 # Google Form cho nút "Góp ý / Báo lỗi" trong tool. Tạo form bằng
 # tools/create_feedback_form.gs (Apps Script) rồi dán "PUBLISHED URL" vào đây.

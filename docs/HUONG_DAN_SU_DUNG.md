@@ -39,7 +39,7 @@
 
 ### Tải về và chạy
 
-1. Vào https://github.com/kiennt-bit/RedOne-Creative-tool/releases
+1. Vào https://github.com/chovuithoima9-dev/RedOne-Creative-tool/releases
 2. Tải file `RedOne-Creative-vX.X.X-win64.zip` ở mục **Latest release**
 3. **Chuột phải** vào file zip → **Extract All…** (BẮT BUỘC giải nén, đừng chạy trong zip)
 4. Mở folder vừa giải nén → **double-click `RedOne Creative.exe`**
@@ -369,8 +369,8 @@ Mọi log ở `data\app.log` (cùng folder exe). Báo lỗi cho dev: gửi **50 
 
 ## 13. Liên hệ / Báo lỗi
 
-- **GitHub**: https://github.com/kiennt-bit/RedOne-Creative-tool
-- **Issues**: https://github.com/kiennt-bit/RedOne-Creative-tool/issues
-- **Releases**: https://github.com/kiennt-bit/RedOne-Creative-tool/releases
+- **GitHub**: https://github.com/chovuithoima9-dev/RedOne-Creative-tool
+- **Issues**: https://github.com/chovuithoima9-dev/RedOne-Creative-tool/issues
+- **Releases**: https://github.com/chovuithoima9-dev/RedOne-Creative-tool/releases
 
 Khi báo lỗi kèm: (1) version tool (Cài Đặt → About), (2) 50 dòng cuối `data\app.log`, (3) screenshot lỗi, (4) các bước trước khi gặp lỗi.
